@@ -24,7 +24,6 @@ struct CalendarView: View {
         return f
     }()
 
-    // 表示している月のタイトル
     private var monthTitle: String {
         Self.monthTitleFormatter.string(from: displayedMonth)
     }
@@ -63,14 +62,12 @@ struct CalendarView: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 4) {
             monthHeader
-
             weekdayHeader
-
             calendarGrid
         }
-        .padding(.horizontal)   // 横だけ余白、縦は詰める
+        .padding(.horizontal)
         .padding(.top, 8)
         .sheet(isPresented: $isShowingDaySheet) {
             if let date = selectedDate {
@@ -103,7 +100,6 @@ struct CalendarView: View {
                 Image(systemName: "chevron.right")
             }
         }
-        .padding(.bottom, 4)
     }
 
     private func moveMonth(by value: Int) {
@@ -128,7 +124,6 @@ struct CalendarView: View {
     }
 
     private func weekdayColor(for weekday: Int) -> Color {
-        // 1=日曜, 7=土曜
         if weekday == 1 {
             return .red
         } else if weekday == 7 {
@@ -144,7 +139,7 @@ struct CalendarView: View {
         let days = daysForCalendar
         let numberOfWeeks = days.count / 7
 
-        return VStack(spacing: 2) {   // ← 行と行の間の余白を小さく
+        return VStack(spacing: 0) {     // 行間ゼロ固定
             ForEach(0..<numberOfWeeks, id: \.self) { weekIndex in
                 HStack(spacing: 0) {
                     ForEach(0..<7, id: \.self) { weekdayIndex in
@@ -168,10 +163,11 @@ struct CalendarView: View {
                                 isShowingDaySheet = true
                             }
                         } else {
-                            // 空白マス
+                            // 空白マスも他のセルと同じ高さで揃える
                             Rectangle()
                                 .foregroundColor(.clear)
-                                .frame(maxWidth: .infinity, minHeight: 40)  // ← 高さを少し低めに
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 44)
                         }
                     }
                 }
@@ -186,7 +182,6 @@ struct CalendarView: View {
 
         guard !alarms.isEmpty else { return nil }
 
-        // 時刻順にソート
         let sorted = alarms.sorted {
             if $0.hour == $1.hour {
                 return $0.minute < $1.minute
@@ -225,28 +220,27 @@ struct CalendarDayCell: View {
         let day = calendar.component(.day, from: date)
 
         Button(action: onTap) {
-            VStack(spacing: 2) {        // ← 文字と文字の間も少し詰める
+            VStack(spacing: 2) {
                 Text("\(day)")
                     .font(.body)
                     .fontWeight(isToday ? .bold : .regular)
                     .foregroundColor(textColor)
 
                 if let summary = summary {
-                    if summary.alarmCount > 1 {
-                        Text("\(summary.earliestTimeText) 他\(summary.alarmCount - 1)件")
-                            .font(.caption2)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                    } else {
-                        Text(summary.earliestTimeText)
-                            .font(.caption2)
-                    }
+                    Text(
+                        summary.alarmCount > 1
+                        ? "\(summary.earliestTimeText) 他\(summary.alarmCount - 1)件"
+                        : summary.earliestTimeText
+                    )
+                    .font(.caption2)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                 } else {
-                    EmptyView()
+                    Spacer().frame(height: 0)
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 40)  // ← 高さ40・余白なしでコンパクトに
-            .padding(.vertical, 1)                      // ← ほんの少しだけ縦の余白
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)   // ← 高さを「44ptで固定」
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(isToday ? Color.gray.opacity(0.15) : Color.clear)
