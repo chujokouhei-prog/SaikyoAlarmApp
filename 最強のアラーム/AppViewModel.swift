@@ -1,323 +1,393 @@
 // AppViewModel.swift
 
 import SwiftUI
-import EventKit
 import Combine
+import EventKit
 import UserNotifications
 
-// 1つのアラームの「ルール」
+// MARK: - モデル: 1つのアラームのルール
+
 struct AlarmRule: Identifiable, Codable, Equatable {
     let id: UUID
     var hour: Int
     var minute: Int
-    var weekdaysOnly: Bool
-    var isEnabled: Bool
-    var snoozeEnabled: Bool   // スヌーズON/OFF
+    var weekdaysOnly: Bool      // 平日のみ
+    var isEnabled: Bool         // 有効/無効（基本状態）
+    var snoozeEnabled: Bool     // スヌーズON/OFF
 
-    // 例: "7:30"
+    init(
+        id: UUID = UUID(),
+        hour: Int,
+        minute: Int,
+        weekdaysOnly: Bool,
+        isEnabled: Bool = true,
+        snoozeEnabled: Bool = false
+    ) {
+        self.id = id
+        self.hour = hour
+        self.minute = minute
+        self.weekdaysOnly = weekdaysOnly
+        self.isEnabled = isEnabled
+        self.snoozeEnabled = snoozeEnabled
+    }
+
+    /// 例: "7:30"
     var timeString: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.dateFormat = "H:mm"
+
         var comps = DateComponents()
         comps.hour = hour
         comps.minute = minute
-        let calendar = Calendar.current
-        let date = calendar.date(from: comps) ?? Date()
-        let formatter = DateFormatter()
-        formatter.dateFormat = "H:mm"
-        return formatter.string(from: date)
-    }
 
-    // 例: "平日（祝日除く）" or "毎日"
-    var modeDescription: String {
-        weekdaysOnly ? "平日（祝日除く）" : "毎日"
+        let calendar = Calendar(identifier: .gregorian)
+        let date = calendar.date(from: comps) ?? Date()
+        return formatter.string(from: date)
     }
 }
 
-@MainActor
-class AppViewModel: ObservableObject {
-    // 登録されているアラームの一覧
-    @Published var alarms: [AlarmRule] = [] {
+// MARK: - 日付ごとの表示用アラーム（ビュー専用）
+
+struct DayAlarm: Identifiable {
+    let id: UUID
+    let hour: Int
+    let minute: Int
+    let weekdaysOnly: Bool
+    let snoozeEnabled: Bool
+    var isEnabled: Bool     // その日だけのON/OFF（例外込み）
+
+    var timeString: String {
+        String(format: "%02d:%02d", hour, minute)
+    }
+}
+
+// MARK: - ビューモデル
+
+final class AppViewModel: ObservableObject {
+
+    // 公開プロパティ ---------------------------------------------------------
+
+    /// すべてのアラームルール（基本状態）
+    @Published var alarmRules: [AlarmRule] = [] {
         didSet {
-            saveAlarms()
-            rescheduleAllNotifications()
+            saveAlarmRules()
+            rescheduleAllAlarms()
         }
     }
 
-    // カレンダー用：アラームがある「日付（年月日だけ）」の集合
-    @Published var alarmDates: Set<DateComponents> = []
+    /// 画面下部などに表示するログ
+    @Published var logMessages: [String] = []
 
-    // 手動で追加した休み（カスタム休日）
-    @Published var customHolidays: Set<DateComponents> = [] {
-        didSet {
-            saveCustomHolidays()
-            rescheduleAllNotifications()
-        }
-    }
+    /// 通知権限が取れているか
+    @Published var notificationPermissionGranted: Bool = false
 
-    private let userDefaultsHolidaysKey = "customHolidays_swiftui"
-    private let userDefaultsAlarmsKey = "alarms_swiftui_rules"
+    /// 日付ごとの「その日だけON/OFF」例外
+    /// key: その日の 0:00 の Date, value: [アラームID: その日だけのON/OFF]
+    @Published var perDayOverrides: [Date: [UUID: Bool]] = [:]
 
+    // 内部 ---------------------------------------------------------
+
+    private let notificationCenter = UNUserNotificationCenter.current()
     private let eventStore = EKEventStore()
-    private var japaneseHolidays: Set<DateComponents> = []
+    private let calendar = Calendar(identifier: .gregorian)
 
-    // スヌーズ設定（固定値）
-    private let snoozeIntervalMinutes = 5
-    private let snoozeRepeatCount = 3   // 3回（＝合計4回鳴る）
+    /// 祝日の日付（その日の 0:00）
+    private var holidayDates: Set<Date> = []
 
-    // 祝前日通知の時刻（21:00固定）
-    private let holidayEveNotificationHour = 21
-    private let holidayEveNotificationMinute = 0
+    private let alarmsUserDefaultsKey = "AlarmRules_v1"
+
+    // MARK: - 初期化
 
     init() {
-        loadCustomHolidays()
-        loadAlarms()
+        loadSavedAlarms()
+        requestNotificationPermission()
         requestCalendarAccessAndLoadHolidays()
-        rescheduleAllNotifications()
     }
 
-    // MARK: - 画面から呼ぶAPI
+    // MARK: - 公開メソッド: アラームの追加・削除・更新
 
     /// 新しいアラームを追加
-    func addAlarm(selectedDate: Date, weekdaysOnly: Bool, snoozeEnabled: Bool) {
-        let calendar = Calendar.current
-        let hour = calendar.component(.hour, from: selectedDate)
-        let minute = calendar.component(.minute, from: selectedDate)
-
-        let newRule = AlarmRule(
-            id: UUID(),
+    func addAlarm(hour: Int, minute: Int, weekdaysOnly: Bool, snoozeEnabled: Bool) {
+        let new = AlarmRule(
             hour: hour,
             minute: minute,
             weekdaysOnly: weekdaysOnly,
             isEnabled: true,
             snoozeEnabled: snoozeEnabled
         )
-        alarms.append(newRule)
-        print("アラームを追加: \(newRule.timeString) \(newRule.modeDescription) スヌーズ: \(newRule.snoozeEnabled)")
+        alarmRules.append(new)
+        appendLog("アラーム追加: \(new.timeString)")
     }
 
-    /// ON/OFF切り替え
-    func toggleAlarmEnabled(_ alarm: AlarmRule) {
-        guard let index = alarms.firstIndex(of: alarm) else { return }
-        alarms[index].isEnabled.toggle()
-    }
-
-    /// 削除（Listの .onDelete から呼ぶ）
+    /// アラーム削除（List の .onDelete から呼び出す想定）
     func deleteAlarms(at offsets: IndexSet) {
-        alarms.remove(atOffsets: offsets)
+        alarmRules.remove(atOffsets: offsets)
+        appendLog("アラーム削除")
     }
 
-    /// カレンダーで使う「カスタム休日」の ON/OFF
-    func toggleCustomHoliday(date: Date) {
-        let components = Calendar.current.dateComponents([.year, .month, .day], from: date)
-        if customHolidays.contains(components) {
-            customHolidays.remove(components)
-        } else {
-            customHolidays.insert(components)
+    /// 1つのアラームの基本状態（常にON/OFF）をトグル
+    func toggleEnabled(for rule: AlarmRule) {
+        if let index = alarmRules.firstIndex(of: rule) {
+            alarmRules[index].isEnabled.toggle()
+            appendLog("アラーム \(alarmRules[index].timeString) を \(alarmRules[index].isEnabled ? "常にON" : "常にOFF") に変更")
         }
     }
 
-    // MARK: - 通知の再スケジュール（スヌーズ＋祝前日込み）
-
-    /// 現在の alarms / 休日設定 をもとに、通知を全部作り直す
-    private func rescheduleAllNotifications() {
-        let center = UNUserNotificationCenter.current()
-        center.removeAllPendingNotificationRequests()
-
-        let calendar = Calendar.current
-        let allHolidays = japaneseHolidays.union(customHolidays)
-        var newAlarmDates: Set<DateComponents> = []
-        let today = Date()
-
-        // 各アラームごとに、今後64日分の「アラーム本体通知」を作る
-        for alarm in alarms where alarm.isEnabled {
-            for i in 0..<64 {
-                guard let targetDate = calendar.date(byAdding: .day, value: i, to: today) else { continue }
-
-                let dayComponents = calendar.dateComponents([.year, .month, .day], from: targetDate)
-
-                let scheduleThisDate: Bool
-                if alarm.weekdaysOnly {
-                    let weekday = calendar.component(.weekday, from: targetDate)
-                    let isWeekday = (weekday >= 2 && weekday <= 6) // 月〜金
-                    let isHoliday = allHolidays.contains(dayComponents)
-                    scheduleThisDate = isWeekday && !isHoliday
-                } else {
-                    scheduleThisDate = true
-                }
-
-                guard scheduleThisDate else { continue }
-
-                // ベースの通知（1回目）
-                var baseComponents = dayComponents
-                baseComponents.hour = alarm.hour
-                baseComponents.minute = alarm.minute
-
-                if let baseDate = calendar.date(from: baseComponents) {
-                    // 1回目（通常）
-                    scheduleNotification(center: center,
-                                         date: baseDate,
-                                         alarm: alarm,
-                                         isSnooze: false)
-
-                    // スヌーズ（5分おきに3回）
-                    if alarm.snoozeEnabled {
-                        for n in 1...snoozeRepeatCount {
-                            if let snoozeDate = calendar.date(byAdding: .minute,
-                                                              value: snoozeIntervalMinutes * n,
-                                                              to: baseDate) {
-                                scheduleNotification(center: center,
-                                                     date: snoozeDate,
-                                                     alarm: alarm,
-                                                     isSnooze: true)
-                            }
-                        }
-                    }
-
-                    // カレンダー表示用：その日に少なくとも1つアラームがある
-                    newAlarmDates.insert(dayComponents)
-                }
-            }
+    /// 基本状態としての ON/OFF を設定（今後使うかもしれないので残す）
+    func setAlarmEnabled(id: UUID, enabled: Bool) {
+        if let index = alarmRules.firstIndex(where: { $0.id == id }) {
+            alarmRules[index].isEnabled = enabled
+            appendLog("アラーム \(alarmRules[index].timeString) の基本状態を \(enabled ? "ON" : "OFF") に設定")
         }
-
-        // --- ここから「祝日前夜通知」をスケジュールする ---
-
-        // 平日専用アラームが1つでも有効なら、祝前日通知を付ける
-        let hasWeekdayOnlyAlarm = alarms.contains { $0.isEnabled && $0.weekdaysOnly }
-
-        if hasWeekdayOnlyAlarm {
-            for i in 0..<64 {
-                guard let holidayDate = calendar.date(byAdding: .day, value: i, to: today) else { continue }
-                let holidayComponents = calendar.dateComponents([.year, .month, .day], from: holidayDate)
-
-                // 「祝日 or カスタム休日」のみ対象（週末だけはここでは扱わない）
-                let isHoliday = allHolidays.contains(holidayComponents)
-                guard isHoliday else { continue }
-
-                // 前日を計算（範囲外や過去ならスキップ）
-                guard let eveDateRaw = calendar.date(byAdding: .day, value: -1, to: holidayDate) else { continue }
-
-                // 通知を出すのは 21:00 固定
-                var eveComponents = calendar.dateComponents([.year, .month, .day], from: eveDateRaw)
-                eveComponents.hour = holidayEveNotificationHour
-                eveComponents.minute = holidayEveNotificationMinute
-
-                guard let eveDate = calendar.date(from: eveComponents),
-                      eveDate > today else {
-                    continue
-                }
-
-                let isCustom = customHolidays.contains(holidayComponents)
-
-                scheduleHolidayEveNotification(center: center,
-                                               eveComponents: eveComponents,
-                                               holidayDate: holidayDate,
-                                               isCustomHoliday: isCustom)
-            }
-        }
-
-        self.alarmDates = newAlarmDates
-        print("通知を再スケジュールしました。アラーム日数: \(newAlarmDates.count)")
     }
 
-    /// 実際に1つの「アラーム本体通知」を登録する共通処理
-    private func scheduleNotification(center: UNUserNotificationCenter,
-                                      date: Date,
-                                      alarm: AlarmRule,
-                                      isSnooze: Bool) {
-        let calendar = Calendar.current
-        let comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+    /// 特定の日だけの ON/OFF を設定
+    func setAlarmEnabled(id: UUID, on date: Date, enabled: Bool) {
+        let key = dayKey(for: date)
+        var map = perDayOverrides[key] ?? [:]
+        map[id] = enabled
+        perDayOverrides[key] = map
 
-        let content = UNMutableNotificationContent()
-        content.title = isSnooze ? "スヌーズ" : "時間です！"
-        content.body = "\(alarm.modeDescription) \(alarm.timeString) のアラームです"
-        content.sound = .default
+        appendLog("日付 \(shortDateString(date)) のアラームを \(enabled ? "ON" : "OFF") にしました（1日だけの設定）")
 
-        let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
-        let request = UNNotificationRequest(identifier: UUID().uuidString,
-                                            content: content,
-                                            trigger: trigger)
-        center.add(request)
+        rescheduleAllAlarms()
     }
 
-    /// 「明日は祝日（or カスタム休日）です」通知を登録
-    private func scheduleHolidayEveNotification(center: UNUserNotificationCenter,
-                                                eveComponents: DateComponents,
-                                                holidayDate: Date,
-                                                isCustomHoliday: Bool) {
-        let calendar = Calendar.current
+    /// 「この日のアラームをすべてオフ」ボタン用
+    /// その日の全アラームに対して「1日だけOFF」の例外をつける
+    func setAllAlarmsEnabled(_ enabled: Bool, on date: Date) {
+        let key = dayKey(for: date)
+        var map = perDayOverrides[key] ?? [:]
+        for rule in alarmRules {
+            map[rule.id] = enabled
+        }
+        perDayOverrides[key] = map
 
-        // 表示用に祝日の日付をフォーマット
+        appendLog("日付 \(shortDateString(date)) のアラームをすべて \(enabled ? "ON" : "OFF") にしました（1日だけの設定）")
+
+        rescheduleAllAlarms()
+    }
+
+    /// カレンダー用: 指定日のアラーム一覧（その日だけのON/OFFを反映した DayAlarm を返す）
+    func alarmsForCalendar(on date: Date) -> [DayAlarm] {
+        alarmRules.map { rule in
+            DayAlarm(
+                id: rule.id,
+                hour: rule.hour,
+                minute: rule.minute,
+                weekdaysOnly: rule.weekdaysOnly,
+                snoozeEnabled: rule.snoozeEnabled,
+                isEnabled: isAlarmEnabled(rule, on: date)
+            )
+        }
+    }
+
+    // MARK: - 祝日関連
+
+    /// 指定日が日本の祝日かどうか（カレンダーの赤色＆平日アラームのスキップに利用）
+    func isHoliday(date: Date) -> Bool {
+        let day = calendar.startOfDay(for: date)
+        return holidayDates.contains(day)
+    }
+
+    // MARK: - プライベート: 日付キー & 有効判定
+
+    /// その日の 0:00 をキーに使う
+    private func dayKey(for date: Date) -> Date {
+        calendar.startOfDay(for: date)
+    }
+
+    /// 例外込みで、その日そのアラームが「有効かどうか」
+    private func isAlarmEnabled(_ rule: AlarmRule, on date: Date) -> Bool {
+        let key = dayKey(for: date)
+        if let map = perDayOverrides[key], let overrideValue = map[rule.id] {
+            return overrideValue
+        }
+        return rule.isEnabled
+    }
+
+    // MARK: - プライベート: ログ
+
+    private func appendLog(_ message: String) {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "ja_JP")
-        formatter.dateFormat = "M月d日(EEE)"
+        formatter.dateFormat = "HH:mm:ss"
 
-        let holidayString = formatter.string(from: holidayDate)
-        let kind = isCustomHoliday ? "お休み" : "祝日"
-
-        let content = UNMutableNotificationContent()
-        content.title = "明日は\(kind)です"
-        content.body = "明日 \(holidayString) は\(kind)なので、平日専用アラームは鳴りません。"
-        content.sound = .default
-
-        let trigger = UNCalendarNotificationTrigger(dateMatching: eveComponents, repeats: false)
-        let request = UNNotificationRequest(identifier: UUID().uuidString,
-                                            content: content,
-                                            trigger: trigger)
-        center.add(request)
-
-        print("祝前日通知を登録: \(holidayString) の前日")
+        let time = formatter.string(from: Date())
+        let line = "[\(time)] \(message)"
+        DispatchQueue.main.async {
+            self.logMessages.insert(line, at: 0)
+        }
     }
 
-    // MARK: - 日本の祝日読み込み
+    private func shortDateString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.dateFormat = "M/d"
+        return formatter.string(from: date)
+    }
+
+    // MARK: - 保存/読み込み（※ perDayOverrides は今のところ保存しない）
+
+    private func saveAlarmRules() {
+        do {
+            let data = try JSONEncoder().encode(alarmRules)
+            UserDefaults.standard.set(data, forKey: alarmsUserDefaultsKey)
+        } catch {
+            appendLog("アラーム保存に失敗: \(error.localizedDescription)")
+        }
+    }
+
+    private func loadSavedAlarms() {
+        guard let data = UserDefaults.standard.data(forKey: alarmsUserDefaultsKey) else {
+            alarmRules = []
+            return
+        }
+
+        do {
+            let decoded = try JSONDecoder().decode([AlarmRule].self, from: data)
+            alarmRules = decoded
+            appendLog("保存済みアラーム読み込み: \(decoded.count)件")
+        } catch {
+            appendLog("アラーム読み込みに失敗: \(error.localizedDescription)")
+            alarmRules = []
+        }
+    }
+
+    // MARK: - 通知まわり
+
+    private func requestNotificationPermission() {
+        notificationCenter.requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, error in
+            DispatchQueue.main.async {
+                self?.notificationPermissionGranted = granted
+                if let error = error {
+                    self?.appendLog("通知許可エラー: \(error.localizedDescription)")
+                } else {
+                    self?.appendLog("通知許可: \(granted ? "許可" : "未許可")")
+                }
+
+                if granted {
+                    self?.rescheduleAllAlarms()
+                }
+            }
+        }
+    }
+
+    /// すべてのアラームに対して、今後数日分の通知を再登録
+    private func rescheduleAllAlarms() {
+        guard notificationPermissionGranted else {
+            appendLog("通知権限がないため、再スケジュールをスキップ")
+            return
+        }
+
+        notificationCenter.removeAllPendingNotificationRequests()
+
+        let daysAhead = 30
+        let today = calendar.startOfDay(for: Date())
+
+        for rule in alarmRules {
+            for offset in 0..<daysAhead {
+                guard let targetDate = calendar.date(byAdding: .day, value: offset, to: today) else { continue }
+
+                if shouldFire(rule: rule, on: targetDate) {
+                    scheduleNotification(for: rule, on: targetDate)
+                }
+            }
+        }
+
+        appendLog("通知を再スケジュールしました。アラーム数: \(alarmRules.count)")
+    }
+
+    /// そのルールが、指定日に鳴るべきかどうか（1日だけOFFも考慮）
+    private func shouldFire(rule: AlarmRule, on date: Date) -> Bool {
+        // その日だけOFFなら鳴らさない
+        if !isAlarmEnabled(rule, on: date) {
+            return false
+        }
+
+        let weekday = calendar.component(.weekday, from: date) // 1=日曜〜7=土曜
+
+        if rule.weekdaysOnly {
+            // 月〜金 かつ 祝日ではない
+            let isWeekday = (2...6).contains(weekday)
+            if !isWeekday { return false }
+            if isHoliday(date: date) { return false }
+        }
+
+        return true
+    }
+
+    /// 実際に UNUserNotificationCenter に通知を登録
+    private func scheduleNotification(for rule: AlarmRule, on date: Date) {
+        var components = calendar.dateComponents([.year, .month, .day], from: date)
+        components.hour = rule.hour
+        components.minute = rule.minute
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+
+        let content = UNMutableNotificationContent()
+        content.title = "アラーム"
+        content.body = rule.weekdaysOnly ? "平日アラーム \(rule.timeString)" : "アラーム \(rule.timeString)"
+        content.sound = rule.snoozeEnabled ? UNNotificationSound.defaultCritical : UNNotificationSound.default
+
+        let id = "alarm-\(rule.id.uuidString)-\(components.year ?? 0)-\(components.month ?? 0)-\(components.day ?? 0)"
+        let request = UNNotificationRequest(identifier: id, content: content, trigger: trigger)
+
+        notificationCenter.add(request) { [weak self] error in
+            if let error = error {
+                self?.appendLog("通知登録エラー: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - 祝日 EventKit まわり
 
     private func requestCalendarAccessAndLoadHolidays() {
         eventStore.requestAccess(to: .event) { [weak self] granted, error in
-            if granted {
-                Task { await self?.loadJapaneseHolidays() }
-            } else if let error = error {
-                print("カレンダーアクセスエラー: \(error.localizedDescription)")
+            if let error = error {
+                self?.appendLog("カレンダーアクセスエラー: \(error.localizedDescription)")
             }
+            guard granted else {
+                self?.appendLog("カレンダーアクセスが拒否されました（祝日連携なしで動作）")
+                return
+            }
+            self?.loadJapaneseHolidays()
         }
     }
 
-    private func loadJapaneseHolidays() async {
-        let calendar = Calendar.current
-        guard let start = calendar.date(from: DateComponents(year: 2024, month: 1, day: 1)),
-              let end = calendar.date(from: DateComponents(year: 2026, month: 12, day: 31)) else { return }
-        guard let cal = eventStore.calendars(for: .event).first(where: { $0.title == "日本の祝日" }) else { return }
-        let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: [cal])
+    /// iOS標準の「日本の祝日」カレンダーから祝日データを読み込む
+    private func loadJapaneseHolidays() {
+        let now = Date()
+        guard
+            let start = calendar.date(byAdding: .year, value: -1, to: now),
+            let end = calendar.date(byAdding: .year, value: 1, to: now)
+        else { return }
+
+        // 「祝日」「日本の祝日」などのカレンダーを探す
+        let holidayCalendars = eventStore.calendars(for: .event).filter {
+            $0.title.contains("祝日") || $0.title.contains("Japanese Holidays")
+        }
+
+        if holidayCalendars.isEmpty {
+            appendLog("祝日カレンダーが見つかりませんでした")
+            return
+        }
+
+        let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: holidayCalendars)
         let events = eventStore.events(matching: predicate)
-        let holidays = Set(events.map { calendar.dateComponents([.year, .month, .day], from: $0.startDate) })
-        await MainActor.run {
-            self.japaneseHolidays = holidays
-            print("日本の祝日を読み込みました: \(self.japaneseHolidays.count)")
-            self.rescheduleAllNotifications()
+
+        var set: Set<Date> = []
+        for event in events {
+            let day = calendar.startOfDay(for: event.startDate)
+            set.insert(day)
         }
-    }
 
-    // MARK: - カスタム休日の保存・読み込み
-
-    private func loadCustomHolidays() {
-        guard let data = UserDefaults.standard.data(forKey: userDefaultsHolidaysKey),
-              let holidays = try? JSONDecoder().decode(Set<DateComponents>.self, from: data) else { return }
-        self.customHolidays = holidays
-    }
-
-    private func saveCustomHolidays() {
-        guard let data = try? JSONEncoder().encode(customHolidays) else { return }
-        UserDefaults.standard.set(data, forKey: userDefaultsHolidaysKey)
-    }
-
-    // MARK: - アラームの保存・読み込み
-
-    private func loadAlarms() {
-        guard let data = UserDefaults.standard.data(forKey: userDefaultsAlarmsKey),
-              let savedAlarms = try? JSONDecoder().decode([AlarmRule].self, from: data) else { return }
-        self.alarms = savedAlarms
-    }
-
-    private func saveAlarms() {
-        guard let data = try? JSONEncoder().encode(alarms) else { return }
-        UserDefaults.standard.set(data, forKey: userDefaultsAlarmsKey)
+        DispatchQueue.main.async {
+            self.holidayDates = set
+            self.appendLog("祝日データ読み込み完了: \(set.count)日")
+            // 祝日情報が入ったので、もう一度スケジュールし直す
+            self.rescheduleAllAlarms()
+        }
     }
 }
-

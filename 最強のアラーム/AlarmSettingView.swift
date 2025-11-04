@@ -7,7 +7,7 @@ struct AlarmSettingView: View {
 
     @State private var selectedDate = Date()
     @State private var weekdaysOnly = true
-    @State private var snoozeEnabled = true   // ← 追加：スヌーズON/OFF
+    @State private var snoozeEnabled = true   // スヌーズON/OFF
     @State private var isShowingAlert = false
     @State private var alertMessage = ""
 
@@ -24,12 +24,22 @@ struct AlarmSettingView: View {
                     Toggle("スヌーズあり（5分 × 3回）", isOn: $snoozeEnabled)
 
                     Button("この内容でアラームを追加") {
+                        // DatePicker から hour / minute を取り出して ViewModel に渡す
+                        let comps = Calendar.current.dateComponents([.hour, .minute], from: selectedDate)
+                        let hour = comps.hour ?? 7
+                        let minute = comps.minute ?? 0
+
                         viewModel.addAlarm(
-                            selectedDate: selectedDate,
+                            hour: hour,
+                            minute: minute,
                             weekdaysOnly: weekdaysOnly,
                             snoozeEnabled: snoozeEnabled
                         )
-                        let formatter = DateFormatter(); formatter.dateFormat = "H:mm"
+
+                        let formatter = DateFormatter()
+                        formatter.locale = Locale(identifier: "ja_JP")
+                        formatter.dateFormat = "H:mm"
+
                         let mode = weekdaysOnly ? "平日（祝日を除く）" : "毎日"
                         let snoozeText = snoozeEnabled ? "スヌーズあり" : "スヌーズなし"
                         alertMessage = "\(mode) \(formatter.string(from: selectedDate))（\(snoozeText)）のアラームを追加しました。"
@@ -39,7 +49,7 @@ struct AlarmSettingView: View {
 
                 // 登録済みアラーム一覧
                 Section(header: Text("登録済みのアラーム")) {
-                    if viewModel.alarms.isEmpty {
+                    if viewModel.alarmRules.isEmpty {
                         Text("まだアラームが登録されていません。")
                             .foregroundColor(.secondary)
                     } else {
@@ -49,7 +59,9 @@ struct AlarmSettingView: View {
                                     VStack(alignment: .leading) {
                                         Text(alarm.timeString)
                                             .font(.title2)
-                                        Text("\(alarm.modeDescription) ・ スヌーズ\(alarm.snoozeEnabled ? "ON" : "OFF")")
+
+                                        // modeDescription は AlarmRule 側のプロパティを想定
+                                        Text("\(alarm.weekdaysOnly ? "平日のみ" : "毎日") ・ スヌーズ\(alarm.snoozeEnabled ? "ON" : "OFF")")
                                             .font(.caption)
                                             .foregroundColor(.secondary)
                                     }
@@ -57,7 +69,7 @@ struct AlarmSettingView: View {
                                     Toggle("", isOn: Binding(
                                         get: { alarm.isEnabled },
                                         set: { _ in
-                                            viewModel.toggleAlarmEnabled(alarm)
+                                            viewModel.toggleEnabled(for: alarm)
                                         }
                                     ))
                                     .labelsHidden()
@@ -67,8 +79,8 @@ struct AlarmSettingView: View {
                                 // 表示はソート済みなので、元の配列の位置に変換
                                 let alarmsToDelete = indexSet.map { sortedAlarms[$0] }
                                 let idsToDelete = Set(alarmsToDelete.map { $0.id })
-                                let newList = viewModel.alarms.filter { !idsToDelete.contains($0.id) }
-                                viewModel.alarms = newList
+                                let newList = viewModel.alarmRules.filter { !idsToDelete.contains($0.id) }
+                                viewModel.alarmRules = newList
                             }
                         }
                         .frame(minHeight: 150, maxHeight: 260)
@@ -86,7 +98,7 @@ struct AlarmSettingView: View {
 
     /// 時刻順にソートしたアラーム
     private var sortedAlarms: [AlarmRule] {
-        viewModel.alarms.sorted { lhs, rhs in
+        viewModel.alarmRules.sorted { lhs, rhs in
             if lhs.hour == rhs.hour {
                 return lhs.minute < rhs.minute
             } else {
@@ -95,4 +107,3 @@ struct AlarmSettingView: View {
         }
     }
 }
-
