@@ -3,34 +3,47 @@
 import SwiftUI
 
 struct ContentView: View {
-    // DatePickerで選択された時刻を保存するための変数
+    var body: some View {
+        // 画面下部にタブバーを表示する
+        TabView {
+            // 1つ目のタブ：アラーム設定画面
+            AlarmSettingView()
+                .tabItem {
+                    Image(systemName: "alarm.fill")
+                    Text("設定")
+                }
+            
+            // 2つ目のタブ：カレンダー画面
+            CalendarView()
+                .tabItem {
+                    Image(systemName: "calendar")
+                    Text("カレンダー")
+                }
+        }
+    }
+}
+
+// これまでのアラーム設定画面のコードをここに移動
+struct AlarmSettingView: View {
     @State private var selectedDate = Date()
-    
-    // 「平日のみ」スイッチの状態を保存するための変数
     @State private var weekdaysOnly = true
-    
-    // アラームがセットされたことを知らせるための変数
     @State private var isShowingAlert = false
     @State private var alertTitle = ""
     @State private var alertMessage = ""
 
     var body: some View {
-        // --- ここから下が変更された部分 ---
-        
         NavigationView {
             Form {
-                // --- 1つ目のセクション：時刻設定 ---
                 Section {
                     DatePicker("時刻を選択", selection: $selectedDate, displayedComponents: .hourAndMinute)
                         .datePickerStyle(.wheel)
-                        .labelsHidden() // "時刻を選択"のラベルは表示しない
+                        .labelsHidden()
                 } header: {
                     Text("時刻")
                         .font(.headline)
                         .foregroundColor(.secondary)
                 }
 
-                // --- 2つ目のセクション：繰り返し設定 ---
                 Section {
                     Toggle(isOn: $weekdaysOnly) {
                         Text("平日のみ鳴らす")
@@ -41,9 +54,8 @@ struct ContentView: View {
                         .foregroundColor(.secondary)
                 }
             }
-            .navigationTitle("アラームを設定") // 画面上部のタイトル
+            .navigationTitle("アラームを設定")
             .toolbar {
-                // ナビゲーションバーに「セット」ボタンを配置
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("セット") {
                         setAlarm()
@@ -52,15 +64,13 @@ struct ContentView: View {
                 }
             }
         }
-        // --- ここまでが変更された部分 ---
-        
-        // アラートを表示するための設定
         .alert(isPresented: $isShowingAlert) {
             Alert(title: Text(alertTitle), message: Text(alertMessage), dismissButton: .default(Text("OK")))
         }
     }
 
-    // アラーム（ローカル通知）を設定する関数
+    // --- 以下、アラームを設定するための関数群（変更なし） ---
+
     func setAlarm() {
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
         print("既存のアラームを全て削除しました。")
@@ -72,7 +82,6 @@ struct ContentView: View {
         }
     }
     
-    // 毎日鳴るアラームをセットする関数
     func setEverydayAlarm() {
         let content = UNMutableNotificationContent()
         content.title = "時間です！"
@@ -88,7 +97,6 @@ struct ContentView: View {
         }
     }
     
-    // 平日のみ鳴るアラームをセットする関数
     func setWeekdaysAlarm() {
         let calendar = Calendar.current
         var notificationCount = 0
@@ -122,7 +130,6 @@ struct ContentView: View {
         handleAlarmSetResult(error: nil, message: "平日（祝日を除く）")
     }
     
-    // アラームセット後のアラート表示処理
     func handleAlarmSetResult(error: Error?, message: String) {
         DispatchQueue.main.async {
             if let error = error {
@@ -138,6 +145,7 @@ struct ContentView: View {
         }
     }
 }
+
 
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
