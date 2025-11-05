@@ -11,6 +11,7 @@ struct SelectedDay: Identifiable {
 /// 月カレンダー画面
 /// - 横スワイプで月送り（TabView のページング）
 /// - 矢印ボタンでも前月/翌月に移動
+/// - 画面左下の「今日」フロートボタンで現在の月へジャンプ
 /// - 土曜=青, 日曜/祝日=赤
 /// - 1日あたり最大2件のアラーム時刻 +「他◯件」
 /// - カレンダー上の表示は今日以降のアラームだけ
@@ -19,10 +20,13 @@ struct CalendarView: View {
 
     private let calendar = Calendar(identifier: .gregorian)
 
-    /// 表示可能な月の一覧（今日の月を中心に ±24ヶ月）
+    /// 表示可能な月の一覧
     private let months: [Date]
 
-    /// 現在表示している月のインデックス（months 配列の何番目か）
+    /// 今日の月が months の何番目か
+    private let todayIndex: Int
+
+    /// 現在表示している月のインデックス
     @State private var currentIndex: Int
 
     /// シートで表示する「選択された日」
@@ -38,14 +42,23 @@ struct CalendarView: View {
         let startOfThisMonth = cal.date(from: cal.dateComponents([.year, .month], from: today))!
 
         var tmp: [Date] = []
-        // だいたい4年分（-24ヶ月〜+24ヶ月）
         for offset in -24...24 {
             if let m = cal.date(byAdding: .month, value: offset, to: startOfThisMonth) {
                 tmp.append(m)
             }
         }
         self.months = tmp
-        _currentIndex = State(initialValue: 24) // 真ん中（＝今月）からスタート
+
+        // 今日の月が何番目かを計算して保存
+        var idxOfToday = 0
+        for (idx, date) in tmp.enumerated() {
+            if cal.isDate(date, equalTo: startOfThisMonth, toGranularity: .month) {
+                idxOfToday = idx
+                break
+            }
+        }
+        self.todayIndex = idxOfToday
+        _currentIndex = State(initialValue: idxOfToday)
     }
 
     // MARK: - フォーマッタ
@@ -93,6 +106,25 @@ struct CalendarView: View {
             .sheet(item: $selectedDay) { selected in
                 DayAlarmDetailSheet(viewModel: viewModel, date: selected.date)
                     .presentationDetents([.medium, .large])
+            }
+            // 左下フロートの「今日」ボタン
+            .overlay(alignment: .bottomLeading) {
+                if currentIndex != todayIndex {
+                    Button {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                            currentIndex = todayIndex
+                        }
+                    } label: {
+                        Text("今日")
+                            .font(.subheadline)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Capsule())
+                    }
+                    .padding(.leading, 16)
+                    .padding(.bottom, 24)
+                }
             }
         }
     }
@@ -224,6 +256,10 @@ struct MonthGridView: View {
                             Rectangle()
                                 .foregroundColor(.clear)
                                 .frame(width: cellWidth, height: cellHeight)
+                                .overlay(
+                                    Rectangle()
+                                        .stroke(Color.secondary.opacity(0.15), lineWidth: 0.5)
+                                )
                         }
                     }
                 }
@@ -232,7 +268,7 @@ struct MonthGridView: View {
     }
 }
 
-// MARK: - 1日セル（最大2件＋他◯件・過去は非表示）
+// MARK: - 1日セル（最大2件＋他◯件・過去は非表示＋罫線）
 
 struct CalendarDayCell: View {
     let date: Date
@@ -277,14 +313,15 @@ struct CalendarDayCell: View {
                 Spacer(minLength: 0)
             }
             .frame(width: width, height: height)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color.clear)
-            )
         }
         .buttonStyle(.plain)
         .disabled(!isCurrentMonth)
         .opacity(isCurrentMonth ? 1.0 : 0.35)
+        // うっすら罫線
+        .overlay(
+            Rectangle()
+                .stroke(Color.secondary.opacity(0.15), lineWidth: 0.5)
+        )
     }
 
     private var dateLabel: some View {
