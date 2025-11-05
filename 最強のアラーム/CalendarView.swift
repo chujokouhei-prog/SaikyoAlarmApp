@@ -13,6 +13,7 @@ struct SelectedDay: Identifiable {
 /// - 矢印ボタンでも前月/翌月に移動
 /// - 土曜=青, 日曜/祝日=赤
 /// - 1日あたり最大2件のアラーム時刻 +「他◯件」
+/// - カレンダー上の表示は今日以降のアラームだけ
 struct CalendarView: View {
     @ObservedObject var viewModel: AppViewModel
 
@@ -37,15 +38,14 @@ struct CalendarView: View {
         let startOfThisMonth = cal.date(from: cal.dateComponents([.year, .month], from: today))!
 
         var tmp: [Date] = []
-        // 例: -24ヶ月〜+24ヶ月（約4年分）
+        // だいたい4年分（-24ヶ月〜+24ヶ月）
         for offset in -24...24 {
             if let m = cal.date(byAdding: .month, value: offset, to: startOfThisMonth) {
                 tmp.append(m)
             }
         }
         self.months = tmp
-        // 真ん中（＝今日の月）からスタート
-        _currentIndex = State(initialValue: 24)
+        _currentIndex = State(initialValue: 24) // 真ん中（＝今月）からスタート
     }
 
     // MARK: - フォーマッタ
@@ -82,7 +82,6 @@ struct CalendarView: View {
                             cellWidth: cellWidth,
                             cellHeight: cellHeight
                         ) { date in
-                            // ★ 日付がタップされたら、その日をシート用にセット
                             selectedDay = SelectedDay(date: date)
                         }
                         .tag(index)
@@ -91,7 +90,6 @@ struct CalendarView: View {
                 .tabViewStyle(.page(indexDisplayMode: .never))
             }
             .padding(.horizontal, 4)
-            // ★ optional な selectedDay をトリガーにする sheet(item:)
             .sheet(item: $selectedDay) { selected in
                 DayAlarmDetailSheet(viewModel: viewModel, date: selected.date)
                     .presentationDetents([.medium, .large])
@@ -179,9 +177,7 @@ struct MonthGridView: View {
         var result: [Date?] = []
 
         // 月初め前の空白
-        for _ in 0..<(firstWeekday - 1) {
-            result.append(nil)
-        }
+        for _ in 0..<(firstWeekday - 1) { result.append(nil) }
 
         // 当月の日付
         for offset in 0..<numberOfDays {
@@ -191,9 +187,7 @@ struct MonthGridView: View {
         }
 
         // 最後の週の空白
-        while result.count % 7 != 0 {
-            result.append(nil)
-        }
+        while result.count % 7 != 0 { result.append(nil) }
 
         return result
     }
@@ -238,14 +232,14 @@ struct MonthGridView: View {
     }
 }
 
-// MARK: - 1日セル（最大2件＋他◯件）
+// MARK: - 1日セル（最大2件＋他◯件・過去は非表示）
 
 struct CalendarDayCell: View {
     let date: Date
     let isCurrentMonth: Bool
     let isHoliday: Bool
     let isSaturday: Bool
-    let alarms: [DayAlarm]   // その日のアラーム
+    let alarms: [DayAlarm]
     let width: CGFloat
     let height: CGFloat
     let onTap: () -> Void
@@ -253,26 +247,26 @@ struct CalendarDayCell: View {
     private let calendar = Calendar(identifier: .gregorian)
 
     var body: some View {
-        let enabledAlarms = alarms.filter { $0.isEnabled }
+        let today = calendar.startOfDay(for: Date())
+        let isPast = calendar.startOfDay(for: date) < today
 
-        // 最大2件だけ時刻として出す
+        // 過去の日付はカレンダー上の時刻表示を消す
+        let enabledAlarms = isPast ? [] : alarms.filter { $0.isEnabled }
+
         let maxVisibleTimes = 2
         let visible = Array(enabledAlarms.prefix(maxVisibleTimes))
         let remainingCount = max(0, enabledAlarms.count - visible.count)
 
         Button(action: onTap) {
             VStack(spacing: 3) {
-                // 日付（今日なら赤丸＋白文字）
                 dateLabel
 
-                // 時刻：1行に1件ずつ、最大2行
                 ForEach(visible) { alarm in
                     Text(String(format: "%02d:%02d", alarm.hour, alarm.minute))
                         .font(.caption2)
                         .lineLimit(1)
                 }
 
-                // 残りがあれば「他◯件」
                 if remainingCount > 0 {
                     Text("他\(remainingCount)件")
                         .font(.caption2)
@@ -293,7 +287,6 @@ struct CalendarDayCell: View {
         .opacity(isCurrentMonth ? 1.0 : 0.35)
     }
 
-    /// 「今日」の見た目 + 通常日の色
     private var dateLabel: some View {
         let day = calendar.component(.day, from: date)
         let isToday = calendar.isDateInToday(date)
@@ -312,7 +305,6 @@ struct CalendarDayCell: View {
         .frame(height: 30)
     }
 
-    /// 休日・土曜・平日で色分け
     private var textColor: Color {
         if isHoliday { return .red }
         if isSaturday { return .blue }
@@ -320,11 +312,22 @@ struct CalendarDayCell: View {
     }
 }
 
-// MARK: - 日付タップ時の詳細シート
+// MARK: - シート: その日の詳細
+
+private struct ToggleTarget {
+    let alarm: DayAlarm
+    let newValue: Bool
+}
 
 struct DayAlarmDetailSheet: View {
     @ObservedObject var viewModel: AppViewModel
     let date: Date
+
+    @State private var toggleTarget: ToggleTarget?
+    @State private var isShowingToggleDialog = false
+    @State private var editingAlarm: DayAlarm?
+
+    private let calendar = Calendar(identifier: .gregorian)
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -356,10 +359,21 @@ struct DayAlarmDetailSheet: View {
 
                                 Spacer()
 
+                                Button("編集") {
+                                    editingAlarm = alarm
+                                }
+                                .font(.caption)
+
                                 Toggle(isOn: Binding(
-                                    get: { alarm.isEnabled },
+                                    get: {
+                                        viewModel
+                                            .alarmsForCalendar(on: date)
+                                            .first(where: { $0.id == alarm.id })?
+                                            .isEnabled ?? false
+                                    },
                                     set: { newValue in
-                                        viewModel.setAlarmEnabled(id: alarm.id, enabled: newValue)
+                                        toggleTarget = ToggleTarget(alarm: alarm, newValue: newValue)
+                                        isShowingToggleDialog = true
                                     }
                                 )) {
                                     EmptyView()
@@ -384,5 +398,110 @@ struct DayAlarmDetailSheet: View {
             .navigationTitle(titleText)
             .navigationBarTitleDisplayMode(.inline)
         }
+        // ON/OFF の変更方法を選ぶダイアログ（Bool版）
+        .confirmationDialog(
+            "アラームの変更",
+            isPresented: $isShowingToggleDialog,
+            titleVisibility: .automatic
+        ) {
+            if let target = toggleTarget {
+                let onOffText = target.newValue ? "オン" : "オフ"
+
+                Button("この日だけ\(onOffText)にする") {
+                    viewModel.setAlarmEnabled(id: target.alarm.id, on: date, enabled: target.newValue)
+                }
+
+                Button("今後のすべてを\(onOffText)にする", role: .destructive) {
+                    viewModel.setAlarmEnabled(id: target.alarm.id, enabled: target.newValue)
+                }
+            }
+
+            Button("キャンセル", role: .cancel) { }
+        } message: {
+            Text("このアラームを「この日だけ」変えるか、「今後のすべて」に適用するか選んでください。")
+        }
+        // 時刻編集シート
+        .sheet(item: $editingAlarm) { alarm in
+            AlarmTimeEditSheet(viewModel: viewModel, alarm: alarm, date: date)
+        }
+    }
+}
+
+// MARK: - 時刻編集用シート
+
+struct AlarmTimeEditSheet: View {
+    @ObservedObject var viewModel: AppViewModel
+    let alarm: DayAlarm
+    let date: Date
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedTime: Date = Date()
+
+    private let calendar = Calendar(identifier: .gregorian)
+
+    init(viewModel: AppViewModel, alarm: DayAlarm, date: Date) {
+        self.viewModel = viewModel
+        self.alarm = alarm
+        self.date = date
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack {
+                DatePicker(
+                    "時刻",
+                    selection: $selectedTime,
+                    displayedComponents: .hourAndMinute
+                )
+                .datePickerStyle(.wheel)
+                .labelsHidden()
+                .padding()
+
+                Spacer()
+
+                VStack(spacing: 12) {
+                    Button {
+                        applyChange(onlyThisDay: true)
+                    } label: {
+                        Text("この日だけこの時刻にする")
+                            .frame(maxWidth: .infinity)
+                    }
+
+                    Button {
+                        applyChange(onlyThisDay: false)
+                    } label: {
+                        Text("今後のすべてをこの時刻にする")
+                            .frame(maxWidth: .infinity)
+                    }
+
+                    Button("キャンセル", role: .cancel) {
+                        dismiss()
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.bottom)
+            }
+            .navigationTitle("時刻を編集")
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                var comps = DateComponents()
+                comps.hour = alarm.hour
+                comps.minute = alarm.minute
+                selectedTime = calendar.date(from: comps) ?? Date()
+            }
+        }
+    }
+
+    private func applyChange(onlyThisDay: Bool) {
+        let comps = calendar.dateComponents([.hour, .minute], from: selectedTime)
+        let hour = comps.hour ?? alarm.hour
+        let minute = comps.minute ?? alarm.minute
+
+        if onlyThisDay {
+            viewModel.setAlarmTime(id: alarm.id, on: date, hour: hour, minute: minute)
+        } else {
+            viewModel.updateAlarmTime(id: alarm.id, hour: hour, minute: minute)
+        }
+        dismiss()
     }
 }

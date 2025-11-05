@@ -12,7 +12,7 @@ struct AlarmRule: Identifiable, Codable, Equatable {
     var hour: Int
     var minute: Int
     var weekdaysOnly: Bool      // 平日のみ
-    var isEnabled: Bool         // 有効/無効（基本状態）
+    var isEnabled: Bool         // 基本状態としての有効/無効
     var snoozeEnabled: Bool     // スヌーズON/OFF
 
     init(
@@ -33,17 +33,7 @@ struct AlarmRule: Identifiable, Codable, Equatable {
 
     /// 例: "7:30"
     var timeString: String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "ja_JP")
-        formatter.dateFormat = "H:mm"
-
-        var comps = DateComponents()
-        comps.hour = hour
-        comps.minute = minute
-
-        let calendar = Calendar(identifier: .gregorian)
-        let date = calendar.date(from: comps) ?? Date()
-        return formatter.string(from: date)
+        String(format: "%02d:%02d", hour, minute)
     }
 }
 
@@ -76,15 +66,19 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// 画面下部などに表示するログ
+    /// ログ表示用
     @Published var logMessages: [String] = []
 
-    /// 通知権限が取れているか
+    /// 通知権限
     @Published var notificationPermissionGranted: Bool = false
 
-    /// 日付ごとの「その日だけON/OFF」例外
-    /// key: その日の 0:00 の Date, value: [アラームID: その日だけのON/OFF]
-    @Published var perDayOverrides: [Date: [UUID: Bool]] = [:]
+    /// 「その日だけ ON/OFF」の例外
+    /// key: その日の 0:00, value: [アラームID: その日のON/OFF]
+    @Published var perDayEnabledOverrides: [Date: [UUID: Bool]] = [:]
+
+    /// 「その日だけ時間変更」の例外
+    /// key: その日の 0:00, value: [アラームID: (hour, minute)]
+    @Published var perDayTimeOverrides: [Date: [UUID: (Int, Int)]] = [:]
 
     // 内部 ---------------------------------------------------------
 
@@ -92,7 +86,7 @@ final class AppViewModel: ObservableObject {
     private let eventStore = EKEventStore()
     private let calendar = Calendar(identifier: .gregorian)
 
-    /// 祝日の日付（その日の 0:00）
+    /// 祝日（その日の 0:00 の Date）
     private var holidayDates: Set<Date> = []
 
     private let alarmsUserDefaultsKey = "AlarmRules_v1"
@@ -126,7 +120,7 @@ final class AppViewModel: ObservableObject {
         appendLog("アラーム削除")
     }
 
-    /// 1つのアラームの基本状態（常にON/OFF）をトグル
+    /// 1つのアラームの「基本状態としての」有効/無効をトグル
     func toggleEnabled(for rule: AlarmRule) {
         if let index = alarmRules.firstIndex(of: rule) {
             alarmRules[index].isEnabled.toggle()
@@ -134,7 +128,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// 基本状態としての ON/OFF を設定（今後使うかもしれないので残す）
+    /// 基本状態としての ON/OFF を設定（「今後のすべて」に相当）
     func setAlarmEnabled(id: UUID, enabled: Bool) {
         if let index = alarmRules.firstIndex(where: { $0.id == id }) {
             alarmRules[index].isEnabled = enabled
@@ -142,40 +136,61 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// 特定の日だけの ON/OFF を設定
+    /// 特定の日だけの ON/OFF を設定（「この日のみ」に相当）
     func setAlarmEnabled(id: UUID, on date: Date, enabled: Bool) {
         let key = dayKey(for: date)
-        var map = perDayOverrides[key] ?? [:]
+        var map = perDayEnabledOverrides[key] ?? [:]
         map[id] = enabled
-        perDayOverrides[key] = map
+        perDayEnabledOverrides[key] = map
 
-        appendLog("日付 \(shortDateString(date)) のアラームを \(enabled ? "ON" : "OFF") にしました（1日だけの設定）")
+        appendLog("日付 \(shortDateString(date)) のアラームID:\(id) を \(enabled ? "ON" : "OFF") にしました（1日だけの設定）")
 
         rescheduleAllAlarms()
     }
 
     /// 「この日のアラームをすべてオフ」ボタン用
-    /// その日の全アラームに対して「1日だけOFF」の例外をつける
     func setAllAlarmsEnabled(_ enabled: Bool, on date: Date) {
         let key = dayKey(for: date)
-        var map = perDayOverrides[key] ?? [:]
+        var map = perDayEnabledOverrides[key] ?? [:]
         for rule in alarmRules {
             map[rule.id] = enabled
         }
-        perDayOverrides[key] = map
+        perDayEnabledOverrides[key] = map
 
-        appendLog("日付 \(shortDateString(date)) のアラームをすべて \(enabled ? "ON" : "OFF") にしました（1日だけの設定）")
+        appendLog("日付 \(shortDateString(date)) のアラームをすべて \(enabled ? "ON" : "OFF") にしました（1日だけ）")
 
         rescheduleAllAlarms()
     }
 
-    /// カレンダー用: 指定日のアラーム一覧（その日だけのON/OFFを反映した DayAlarm を返す）
+    /// 「この日だけ時間を変更」用
+    func setAlarmTime(id: UUID, on date: Date, hour: Int, minute: Int) {
+        let key = dayKey(for: date)
+        var map = perDayTimeOverrides[key] ?? [:]
+        map[id] = (hour, minute)
+        perDayTimeOverrides[key] = map
+
+        appendLog("日付 \(shortDateString(date)) のアラームID:\(id) の時刻を \(String(format: "%02d:%02d", hour, minute)) に変更（1日だけ）")
+
+        rescheduleAllAlarms()
+    }
+
+    /// 「今後のすべての時間を変更」用
+    func updateAlarmTime(id: UUID, hour: Int, minute: Int) {
+        guard let index = alarmRules.firstIndex(where: { $0.id == id }) else { return }
+        alarmRules[index].hour = hour
+        alarmRules[index].minute = minute
+        appendLog("アラーム \(alarmRules[index].timeString) の基本時刻を変更")
+        // alarmRules の didSet で再スケジュールされる
+    }
+
+    /// カレンダー用: 指定日のアラーム一覧（その日だけのON/OFF・時間を反映した DayAlarm を返す）
     func alarmsForCalendar(on date: Date) -> [DayAlarm] {
         alarmRules.map { rule in
-            DayAlarm(
+            let time = timeFor(rule, on: date)
+            return DayAlarm(
                 id: rule.id,
-                hour: rule.hour,
-                minute: rule.minute,
+                hour: time.hour,
+                minute: time.minute,
                 weekdaysOnly: rule.weekdaysOnly,
                 snoozeEnabled: rule.snoozeEnabled,
                 isEnabled: isAlarmEnabled(rule, on: date)
@@ -183,17 +198,14 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    // MARK: - 祝日関連
-
-    /// 指定日が日本の祝日かどうか（カレンダーの赤色＆平日アラームのスキップに利用）
+    /// 指定日が祝日かどうか
     func isHoliday(date: Date) -> Bool {
         let day = calendar.startOfDay(for: date)
         return holidayDates.contains(day)
     }
 
-    // MARK: - プライベート: 日付キー & 有効判定
+    // MARK: - 内部ヘルパー（日付キー・有効判定・時間判定）
 
-    /// その日の 0:00 をキーに使う
     private func dayKey(for date: Date) -> Date {
         calendar.startOfDay(for: date)
     }
@@ -201,13 +213,22 @@ final class AppViewModel: ObservableObject {
     /// 例外込みで、その日そのアラームが「有効かどうか」
     private func isAlarmEnabled(_ rule: AlarmRule, on date: Date) -> Bool {
         let key = dayKey(for: date)
-        if let map = perDayOverrides[key], let overrideValue = map[rule.id] {
+        if let map = perDayEnabledOverrides[key], let overrideValue = map[rule.id] {
             return overrideValue
         }
         return rule.isEnabled
     }
 
-    // MARK: - プライベート: ログ
+    /// 例外込みで、その日そのアラームが鳴る時刻
+    private func timeFor(_ rule: AlarmRule, on date: Date) -> (hour: Int, minute: Int) {
+        let key = dayKey(for: date)
+        if let map = perDayTimeOverrides[key], let overrideTime = map[rule.id] {
+            return overrideTime
+        }
+        return (rule.hour, rule.minute)
+    }
+
+    // MARK: - ログ
 
     private func appendLog(_ message: String) {
         let formatter = DateFormatter()
@@ -228,7 +249,7 @@ final class AppViewModel: ObservableObject {
         return formatter.string(from: date)
     }
 
-    // MARK: - 保存/読み込み（※ perDayOverrides は今のところ保存しない）
+    // MARK: - 保存/読み込み（ルールのみ保存）
 
     private func saveAlarmRules() {
         do {
@@ -320,9 +341,11 @@ final class AppViewModel: ObservableObject {
 
     /// 実際に UNUserNotificationCenter に通知を登録
     private func scheduleNotification(for rule: AlarmRule, on date: Date) {
+        let time = timeFor(rule, on: date)
+
         var components = calendar.dateComponents([.year, .month, .day], from: date)
-        components.hour = rule.hour
-        components.minute = rule.minute
+        components.hour = time.hour
+        components.minute = time.minute
 
         let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
 
@@ -364,7 +387,6 @@ final class AppViewModel: ObservableObject {
             let end = calendar.date(byAdding: .year, value: 1, to: now)
         else { return }
 
-        // 「祝日」「日本の祝日」などのカレンダーを探す
         let holidayCalendars = eventStore.calendars(for: .event).filter {
             $0.title.contains("祝日") || $0.title.contains("Japanese Holidays")
         }
@@ -386,7 +408,6 @@ final class AppViewModel: ObservableObject {
         DispatchQueue.main.async {
             self.holidayDates = set
             self.appendLog("祝日データ読み込み完了: \(set.count)日")
-            // 祝日情報が入ったので、もう一度スケジュールし直す
             self.rescheduleAllAlarms()
         }
     }
