@@ -2,11 +2,6 @@
 
 import SwiftUI
 
-/// カレンダー画面
-/// - 土曜日は青
-/// - 日曜日＆祝日は赤
-/// - カレンダー上に、その日の最も早いアラーム＋件数を表示
-/// - 日付タップで、その日のアラーム一覧＋「この日のアラームを全てオフ」ボタン
 struct CalendarView: View {
     @ObservedObject var viewModel: AppViewModel
 
@@ -16,7 +11,7 @@ struct CalendarView: View {
 
     private let calendar = Calendar(identifier: .gregorian)
 
-    // 月表示タイトル用
+    // 月表示用フォーマッタ
     private static let monthTitleFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "ja_JP")
@@ -28,13 +23,11 @@ struct CalendarView: View {
         Self.monthTitleFormatter.string(from: displayedMonth)
     }
 
-    // カレンダーに表示する日付（前後の空白含む）
+    // カレンダーに表示する日付（前後の空白を含む）
     private var daysForCalendar: [Date?] {
         guard let startOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: displayedMonth)),
               let range = calendar.range(of: .day, in: .month, for: startOfMonth)
-        else {
-            return []
-        }
+        else { return [] }
 
         let numberOfDays = range.count
         let firstWeekday = calendar.component(.weekday, from: startOfMonth) // 1=日曜〜7=土曜
@@ -47,13 +40,13 @@ struct CalendarView: View {
         }
 
         // 当月の日付
-        for dayOffset in 0..<numberOfDays {
-            if let date = calendar.date(byAdding: .day, value: dayOffset, to: startOfMonth) {
+        for offset in 0..<numberOfDays {
+            if let date = calendar.date(byAdding: .day, value: offset, to: startOfMonth) {
                 result.append(date)
             }
         }
 
-        // 7の倍数になるように後ろを空白で埋める
+        // 7の倍数になるように後ろも空白で埋める
         while result.count % 7 != 0 {
             result.append(nil)
         }
@@ -62,44 +55,47 @@ struct CalendarView: View {
     }
 
     var body: some View {
-        VStack(spacing: 4) {
-            monthHeader
-            weekdayHeader
-            calendarGrid
-        }
-        .padding(.horizontal)
-        .padding(.top, 8)
-        .sheet(isPresented: $isShowingDaySheet) {
-            if let date = selectedDate {
-                DayAlarmDetailSheet(viewModel: viewModel, date: date)
-                    .presentationDetents([.medium, .large])
+        GeometryReader { geo in
+            // 画面サイズに応じてセルの大きさを調整
+            let cellHeight = geo.size.height * 0.75 / 6   // 画面高さの75%を6行で割る
+            let cellWidth  = geo.size.width / 7
+
+            VStack(spacing: 4) {
+                monthHeader
+                weekdayHeader
+                calendarGrid(cellWidth: cellWidth, cellHeight: cellHeight)
+            }
+            .padding(.horizontal, 4)
+            .sheet(isPresented: $isShowingDaySheet) {
+                if let date = selectedDate {
+                    DayAlarmDetailSheet(viewModel: viewModel, date: date)
+                        .presentationDetents([.medium, .large])
+                }
             }
         }
     }
 
-    // MARK: - Header (月切り替え)
+    // MARK: - 月ヘッダー
 
     private var monthHeader: some View {
         HStack {
-            Button {
-                moveMonth(by: -1)
-            } label: {
+            Button { moveMonth(by: -1) } label: {
                 Image(systemName: "chevron.left")
             }
 
             Spacer()
 
             Text(monthTitle)
-                .font(.headline)
+                .font(.title3)
+                .fontWeight(.semibold)
 
             Spacer()
 
-            Button {
-                moveMonth(by: 1)
-            } label: {
+            Button { moveMonth(by: 1) } label: {
                 Image(systemName: "chevron.right")
             }
         }
+        .padding(.bottom, 4)
     }
 
     private func moveMonth(by value: Int) {
@@ -124,22 +120,20 @@ struct CalendarView: View {
     }
 
     private func weekdayColor(for weekday: Int) -> Color {
-        if weekday == 1 {
-            return .red
-        } else if weekday == 7 {
-            return .blue
-        } else {
-            return .secondary
+        switch weekday {
+        case 1: return .red
+        case 7: return .blue
+        default: return .secondary
         }
     }
 
     // MARK: - カレンダー本体
 
-    private var calendarGrid: some View {
+    private func calendarGrid(cellWidth: CGFloat, cellHeight: CGFloat) -> some View {
         let days = daysForCalendar
         let numberOfWeeks = days.count / 7
 
-        return VStack(spacing: 0) {     // 行間ゼロ固定
+        return VStack(spacing: 0) {
             ForEach(0..<numberOfWeeks, id: \.self) { weekIndex in
                 HStack(spacing: 0) {
                     ForEach(0..<7, id: \.self) { weekdayIndex in
@@ -150,100 +144,81 @@ struct CalendarView: View {
                             let isCurrentMonth = calendar.isDate(date, equalTo: displayedMonth, toGranularity: .month)
                             let isHoliday = viewModel.isHoliday(date: date) || calendar.component(.weekday, from: date) == 1
                             let isSaturday = calendar.component(.weekday, from: date) == 7
-                            let summary = daySummary(for: date)
+                            let alarms = viewModel.alarmsForCalendar(on: date)
 
                             CalendarDayCell(
                                 date: date,
                                 isCurrentMonth: isCurrentMonth,
                                 isHoliday: isHoliday,
                                 isSaturday: isSaturday,
-                                summary: summary
+                                alarms: alarms,
+                                width: cellWidth,
+                                height: cellHeight
                             ) {
                                 selectedDate = date
                                 isShowingDaySheet = true
                             }
                         } else {
-                            // 空白マスも他のセルと同じ高さで揃える
+                            // 空白マス
                             Rectangle()
                                 .foregroundColor(.clear)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 44)
+                                .frame(width: cellWidth, height: cellHeight)
                         }
                     }
                 }
             }
         }
     }
-
-    // その日のアラーム概要（最も早い時間＋件数）
-    private func daySummary(for date: Date) -> DaySummary? {
-        let alarms = viewModel.alarmsForCalendar(on: date)
-            .filter { $0.isEnabled }
-
-        guard !alarms.isEmpty else { return nil }
-
-        let sorted = alarms.sorted {
-            if $0.hour == $1.hour {
-                return $0.minute < $1.minute
-            } else {
-                return $0.hour < $1.hour
-            }
-        }
-
-        let first = sorted[0]
-        let timeText = String(format: "%02d:%02d", first.hour, first.minute)
-
-        return DaySummary(earliestTimeText: timeText, alarmCount: alarms.count)
-    }
 }
 
-// MARK: - DaySummary
-
-struct DaySummary {
-    let earliestTimeText: String
-    let alarmCount: Int
-}
-
-// MARK: - 1日分のセル表示
+// MARK: - 1日セル
 
 struct CalendarDayCell: View {
     let date: Date
     let isCurrentMonth: Bool
     let isHoliday: Bool
     let isSaturday: Bool
-    let summary: DaySummary?
+    let alarms: [DayAlarm]   // その日のアラーム
+    let width: CGFloat
+    let height: CGFloat
     let onTap: () -> Void
 
     private let calendar = Calendar(identifier: .gregorian)
 
     var body: some View {
-        let day = calendar.component(.day, from: date)
+        let enabledAlarms = alarms.filter { $0.isEnabled }
+
+        // ★ 最大2件だけ時刻として出す
+        let maxVisibleTimes = 2
+        let visible = Array(enabledAlarms.prefix(maxVisibleTimes))
+        let remainingCount = max(0, enabledAlarms.count - visible.count)
 
         Button(action: onTap) {
-            VStack(spacing: 2) {
-                Text("\(day)")
-                    .font(.body)
-                    .fontWeight(isToday ? .bold : .regular)
-                    .foregroundColor(textColor)
+            VStack(spacing: 3) {
+                // 日付（今日なら赤丸＋白文字）
+                dateLabel
 
-                if let summary = summary {
-                    Text(
-                        summary.alarmCount > 1
-                        ? "\(summary.earliestTimeText) 他\(summary.alarmCount - 1)件"
-                        : summary.earliestTimeText
-                    )
-                    .font(.caption2)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                } else {
-                    Spacer().frame(height: 0)
+                // 時刻：1行に1件ずつ、最大2行
+                ForEach(visible) { alarm in
+                    Text(String(format: "%02d:%02d", alarm.hour, alarm.minute))
+                        .font(.caption2)
+                        .lineLimit(1)
                 }
+
+                // 残りがあれば「他◯件」
+                if remainingCount > 0 {
+                    Text("他\(remainingCount)件")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 44)   // ← 高さを「44ptで固定」
+            .frame(width: width, height: height)
             .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isToday ? Color.gray.opacity(0.15) : Color.clear)
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.clear)
             )
         }
         .buttonStyle(.plain)
@@ -251,28 +226,37 @@ struct CalendarDayCell: View {
         .opacity(isCurrentMonth ? 1.0 : 0.35)
     }
 
-    private var isToday: Bool {
-        calendar.isDateInToday(date)
+    /// 「今日」の見た目 + 通常日の色
+    private var dateLabel: some View {
+        let day = calendar.component(.day, from: date)
+        let isToday = calendar.isDateInToday(date)
+
+        return ZStack {
+            if isToday {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 28, height: 28)
+            }
+
+            Text("\(day)")
+                .font(.system(size: 15, weight: isToday ? .semibold : .regular))
+                .foregroundColor(isToday ? .white : textColor)
+        }
+        .frame(height: 30)
     }
 
+    /// 休日・土曜・平日で色分け
     private var textColor: Color {
-        if isHoliday {
-            return .red
-        }
-        if isSaturday {
-            return .blue
-        }
+        if isHoliday { return .red }
+        if isSaturday { return .blue }
         return .primary
     }
 }
-
-// MARK: - 日付タップ時のシート
+// MARK: - 日付タップ時の詳細シート
 
 struct DayAlarmDetailSheet: View {
     @ObservedObject var viewModel: AppViewModel
     let date: Date
-
-    private let calendar = Calendar(identifier: .gregorian)
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -310,7 +294,7 @@ struct DayAlarmDetailSheet: View {
                                         viewModel.setAlarmEnabled(id: alarm.id, enabled: newValue)
                                     }
                                 )) {
-                                    Text("")
+                                    EmptyView()
                                 }
                                 .labelsHidden()
                             }
