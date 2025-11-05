@@ -2,19 +2,48 @@
 
 import SwiftUI
 
+/// 月カレンダー画面
+/// - 横スワイプで月送り（TabView のページング）
+/// - 矢印ボタンでも前月/翌月に移動
+/// - 土曜=青, 日曜/祝日=赤
+/// - 1日あたり最大2件のアラーム時刻 +「他◯件」
 struct CalendarView: View {
     @ObservedObject var viewModel: AppViewModel
 
-    @State private var displayedMonth: Date = Date()
+    private let calendar = Calendar(identifier: .gregorian)
+
+    /// 表示可能な月の一覧（今日の月を中心に ±24ヶ月）
+    private let months: [Date]
+
+    /// 現在表示している月のインデックス（months 配列の何番目か）
+    @State private var currentIndex: Int
+
     @State private var isShowingDaySheet: Bool = false
     @State private var selectedDate: Date? = nil
 
-    // スワイプの一時的な横ずれ量
-    @State private var dragOffsetX: CGFloat = 0
+    // MARK: - 初期化
 
-    private let calendar = Calendar(identifier: .gregorian)
+    init(viewModel: AppViewModel) {
+        self.viewModel = viewModel
 
-    // 月表示用フォーマッタ
+        let today = Date()
+        let cal = Calendar(identifier: .gregorian)
+        let startOfThisMonth = cal.date(from: cal.dateComponents([.year, .month], from: today))!
+
+        var tmp: [Date] = []
+        // 例: -24ヶ月〜+24ヶ月（約4年分）
+        for offset in -24...24 {
+            if let m = cal.date(byAdding: .month, value: offset, to: startOfThisMonth) {
+                tmp.append(m)
+            }
+        }
+        self.months = tmp
+        // 真ん中（＝今日の月）からスタート
+        _currentIndex = State(initialValue: 24)
+    }
+
+    // MARK: - フォーマッタ
+
     private static let monthTitleFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "ja_JP")
@@ -23,78 +52,39 @@ struct CalendarView: View {
     }()
 
     private var monthTitle: String {
-        Self.monthTitleFormatter.string(from: displayedMonth)
+        Self.monthTitleFormatter.string(from: months[currentIndex])
     }
 
-    // カレンダーに表示する日付（前後の空白を含む）
-    private var daysForCalendar: [Date?] {
-        guard let startOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: displayedMonth)),
-              let range = calendar.range(of: .day, in: .month, for: startOfMonth)
-        else { return [] }
-
-        let numberOfDays = range.count
-        let firstWeekday = calendar.component(.weekday, from: startOfMonth) // 1=日曜〜7=土曜
-
-        var result: [Date?] = []
-
-        // 月初め前の空白
-        for _ in 0..<(firstWeekday - 1) {
-            result.append(nil)
-        }
-
-        // 当月の日付
-        for offset in 0..<numberOfDays {
-            if let date = calendar.date(byAdding: .day, value: offset, to: startOfMonth) {
-                result.append(date)
-            }
-        }
-
-        // 7の倍数になるように後ろも空白で埋める
-        while result.count % 7 != 0 {
-            result.append(nil)
-        }
-
-        return result
-    }
+    // MARK: - Body
 
     var body: some View {
         GeometryReader { geo in
-            // 画面サイズに応じてセルの大きさを調整
-            let cellHeight = geo.size.height * 0.75 / 6   // 画面高さの75%を6行で割る
+            let cellHeight = geo.size.height * 0.75 / 6
             let cellWidth  = geo.size.width / 7
-            let swipeThreshold = geo.size.width * 0.25    // 25% 以上動いたらページ送り
 
             VStack(spacing: 4) {
-                monthHeader
+                header
                 weekdayHeader
-                calendarGrid(cellWidth: cellWidth, cellHeight: cellHeight)
+
+                // 横スワイプで月切り替え
+                TabView(selection: $currentIndex) {
+                    ForEach(months.indices, id: \.self) { index in
+                        MonthGridView(
+                            monthDate: months[index],
+                            viewModel: viewModel,
+                            calendar: calendar,
+                            cellWidth: cellWidth,
+                            cellHeight: cellHeight
+                        ) { date in
+                            selectedDate = date
+                            isShowingDaySheet = true
+                        }
+                        .tag(index)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
             }
             .padding(.horizontal, 4)
-            // スワイプに合わせて少しだけ横にスライドさせる
-            .offset(x: dragOffsetX)
-            .contentShape(Rectangle()) // 空白部分でもドラッグを拾えるように
-            .gesture(
-                DragGesture()
-                    .onChanged { value in
-                        // 横方向の移動だけ追う
-                        dragOffsetX = value.translation.width
-                    }
-                    .onEnded { value in
-                        let translation = value.translation.width
-
-                        withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
-                            if translation < -swipeThreshold {
-                                // 左にスワイプ → 次の月へ
-                                moveMonth(by: 1)
-                            } else if translation > swipeThreshold {
-                                // 右にスワイプ → 前の月へ
-                                moveMonth(by: -1)
-                            }
-                            // 位置を元に戻す
-                            dragOffsetX = 0
-                        }
-                    }
-            )
             .sheet(isPresented: $isShowingDaySheet) {
                 if let date = selectedDate {
                     DayAlarmDetailSheet(viewModel: viewModel, date: date)
@@ -104,11 +94,17 @@ struct CalendarView: View {
         }
     }
 
-    // MARK: - 月ヘッダー
+    // MARK: - ヘッダー（年・月＋矢印）
 
-    private var monthHeader: some View {
+    private var header: some View {
         HStack {
-            Button { moveMonth(by: -1) } label: {
+            Button {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                    if currentIndex > 0 {
+                        currentIndex -= 1
+                    }
+                }
+            } label: {
                 Image(systemName: "chevron.left")
             }
 
@@ -120,17 +116,17 @@ struct CalendarView: View {
 
             Spacer()
 
-            Button { moveMonth(by: 1) } label: {
+            Button {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                    if currentIndex < months.count - 1 {
+                        currentIndex += 1
+                    }
+                }
+            } label: {
                 Image(systemName: "chevron.right")
             }
         }
         .padding(.bottom, 4)
-    }
-
-    private func moveMonth(by value: Int) {
-        if let newMonth = calendar.date(byAdding: .month, value: value, to: displayedMonth) {
-            displayedMonth = newMonth
-        }
     }
 
     // MARK: - 曜日ヘッダー
@@ -155,14 +151,53 @@ struct CalendarView: View {
         default: return .secondary
         }
     }
+}
 
-    // MARK: - カレンダー本体
+// MARK: - 1ヶ月分のグリッド
 
-    private func calendarGrid(cellWidth: CGFloat, cellHeight: CGFloat) -> some View {
+struct MonthGridView: View {
+    let monthDate: Date
+    @ObservedObject var viewModel: AppViewModel
+    let calendar: Calendar
+    let cellWidth: CGFloat
+    let cellHeight: CGFloat
+    let onSelectDate: (Date) -> Void
+
+    private var daysForCalendar: [Date?] {
+        guard let startOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: monthDate)),
+              let range = calendar.range(of: .day, in: .month, for: startOfMonth)
+        else { return [] }
+
+        let numberOfDays = range.count
+        let firstWeekday = calendar.component(.weekday, from: startOfMonth)
+
+        var result: [Date?] = []
+
+        // 月初め前の空白
+        for _ in 0..<(firstWeekday - 1) {
+            result.append(nil)
+        }
+
+        // 当月の日付
+        for offset in 0..<numberOfDays {
+            if let date = calendar.date(byAdding: .day, value: offset, to: startOfMonth) {
+                result.append(date)
+            }
+        }
+
+        // 最後の週の空白
+        while result.count % 7 != 0 {
+            result.append(nil)
+        }
+
+        return result
+    }
+
+    var body: some View {
         let days = daysForCalendar
         let numberOfWeeks = days.count / 7
 
-        return VStack(spacing: 0) {
+        VStack(spacing: 0) {
             ForEach(0..<numberOfWeeks, id: \.self) { weekIndex in
                 HStack(spacing: 0) {
                     ForEach(0..<7, id: \.self) { weekdayIndex in
@@ -170,7 +205,7 @@ struct CalendarView: View {
                         let date = days[index]
 
                         if let date = date {
-                            let isCurrentMonth = calendar.isDate(date, equalTo: displayedMonth, toGranularity: .month)
+                            let isCurrentMonth = calendar.isDate(date, equalTo: monthDate, toGranularity: .month)
                             let isHoliday = viewModel.isHoliday(date: date) || calendar.component(.weekday, from: date) == 1
                             let isSaturday = calendar.component(.weekday, from: date) == 7
                             let alarms = viewModel.alarmsForCalendar(on: date)
@@ -184,11 +219,9 @@ struct CalendarView: View {
                                 width: cellWidth,
                                 height: cellHeight
                             ) {
-                                selectedDate = date
-                                isShowingDaySheet = true
+                                onSelectDate(date)
                             }
                         } else {
-                            // 空白マス
                             Rectangle()
                                 .foregroundColor(.clear)
                                 .frame(width: cellWidth, height: cellHeight)
@@ -217,7 +250,7 @@ struct CalendarDayCell: View {
     var body: some View {
         let enabledAlarms = alarms.filter { $0.isEnabled }
 
-        // ★ 最大2件だけ時刻として出す
+        // 最大2件だけ時刻として出す
         let maxVisibleTimes = 2
         let visible = Array(enabledAlarms.prefix(maxVisibleTimes))
         let remainingCount = max(0, enabledAlarms.count - visible.count)
