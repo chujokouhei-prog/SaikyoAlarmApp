@@ -9,6 +9,9 @@ struct CalendarView: View {
     @State private var isShowingDaySheet: Bool = false
     @State private var selectedDate: Date? = nil
 
+    // スワイプの一時的な横ずれ量
+    @State private var dragOffsetX: CGFloat = 0
+
     private let calendar = Calendar(identifier: .gregorian)
 
     // 月表示用フォーマッタ
@@ -59,6 +62,7 @@ struct CalendarView: View {
             // 画面サイズに応じてセルの大きさを調整
             let cellHeight = geo.size.height * 0.75 / 6   // 画面高さの75%を6行で割る
             let cellWidth  = geo.size.width / 7
+            let swipeThreshold = geo.size.width * 0.25    // 25% 以上動いたらページ送り
 
             VStack(spacing: 4) {
                 monthHeader
@@ -66,6 +70,31 @@ struct CalendarView: View {
                 calendarGrid(cellWidth: cellWidth, cellHeight: cellHeight)
             }
             .padding(.horizontal, 4)
+            // スワイプに合わせて少しだけ横にスライドさせる
+            .offset(x: dragOffsetX)
+            .contentShape(Rectangle()) // 空白部分でもドラッグを拾えるように
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        // 横方向の移動だけ追う
+                        dragOffsetX = value.translation.width
+                    }
+                    .onEnded { value in
+                        let translation = value.translation.width
+
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                            if translation < -swipeThreshold {
+                                // 左にスワイプ → 次の月へ
+                                moveMonth(by: 1)
+                            } else if translation > swipeThreshold {
+                                // 右にスワイプ → 前の月へ
+                                moveMonth(by: -1)
+                            }
+                            // 位置を元に戻す
+                            dragOffsetX = 0
+                        }
+                    }
+            )
             .sheet(isPresented: $isShowingDaySheet) {
                 if let date = selectedDate {
                     DayAlarmDetailSheet(viewModel: viewModel, date: date)
@@ -171,7 +200,7 @@ struct CalendarView: View {
     }
 }
 
-// MARK: - 1日セル
+// MARK: - 1日セル（最大2件＋他◯件）
 
 struct CalendarDayCell: View {
     let date: Date
@@ -252,6 +281,7 @@ struct CalendarDayCell: View {
         return .primary
     }
 }
+
 // MARK: - 日付タップ時の詳細シート
 
 struct DayAlarmDetailSheet: View {
