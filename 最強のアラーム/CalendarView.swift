@@ -2,6 +2,12 @@
 
 import SwiftUI
 
+// シート表示用に、日付を包むだけのラッパー
+struct SelectedDay: Identifiable {
+    let id = UUID()
+    let date: Date
+}
+
 /// 月カレンダー画面
 /// - 横スワイプで月送り（TabView のページング）
 /// - 矢印ボタンでも前月/翌月に移動
@@ -18,8 +24,8 @@ struct CalendarView: View {
     /// 現在表示している月のインデックス（months 配列の何番目か）
     @State private var currentIndex: Int
 
-    @State private var isShowingDaySheet: Bool = false
-    @State private var selectedDate: Date? = nil
+    /// シートで表示する「選択された日」
+    @State private var selectedDay: SelectedDay?
 
     // MARK: - 初期化
 
@@ -76,8 +82,8 @@ struct CalendarView: View {
                             cellWidth: cellWidth,
                             cellHeight: cellHeight
                         ) { date in
-                            selectedDate = date
-                            isShowingDaySheet = true
+                            // ★ 日付がタップされたら、その日をシート用にセット
+                            selectedDay = SelectedDay(date: date)
                         }
                         .tag(index)
                     }
@@ -85,11 +91,10 @@ struct CalendarView: View {
                 .tabViewStyle(.page(indexDisplayMode: .never))
             }
             .padding(.horizontal, 4)
-            .sheet(isPresented: $isShowingDaySheet) {
-                if let date = selectedDate {
-                    DayAlarmDetailSheet(viewModel: viewModel, date: date)
-                        .presentationDetents([.medium, .large])
-                }
+            // ★ optional な selectedDay をトリガーにする sheet(item:)
+            .sheet(item: $selectedDay) { selected in
+                DayAlarmDetailSheet(viewModel: viewModel, date: selected.date)
+                    .presentationDetents([.medium, .large])
             }
         }
     }
