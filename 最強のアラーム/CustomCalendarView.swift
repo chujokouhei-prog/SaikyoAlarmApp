@@ -193,8 +193,9 @@ struct CustomCalendarView: View {
             return .primary
         }()
 
-        let textColor: Color = isToday ? .white : baseColor
+        // ⭐ 過去の日は表示しない、それ以外は「その日に関係あるアラーム」を全部表示
         let dayAlarms: [AlarmItem] = isPast ? [] : alarmsFor(date: date)
+        let textColor: Color = isToday ? .white : baseColor
 
         return Button {
             withAnimation(.easeInOut(duration: 0.15)) {
@@ -249,15 +250,18 @@ struct CustomCalendarView: View {
         let dayStart = calendar.startOfDay(for: date)
         let todayStart = calendar.startOfDay(for: Date())
 
+        // 今日より過去は表示しない
         guard dayStart >= todayStart else { return [] }
 
+        // ✅ isEnabled かつ、その曜日に鳴る ＋
+        // ✅ その日付が disabledDates に含まれていないものだけ表示
         return alarmViewModel.alarms.filter { alarm in
             alarm.isEnabled &&
             alarm.repeatWeekdays.contains(weekday) &&
             !alarm.disabledDates.contains(dayStart)
         }
     }
-
+    
     // MARK: - 日付ヘルパーなど
 
     private func moveToToday() {
@@ -307,7 +311,7 @@ struct CustomCalendarView: View {
         return result
     }
 
-    // 日本の祝日（簡易版＋振替）
+    // 日本の祝日（簡易版＋振替）※前と同じ
     private func isJapaneseHoliday(_ date: Date) -> Bool {
         let dayStart = calendar.startOfDay(for: date)
         let year = calendar.component(.year, from: dayStart)
@@ -344,22 +348,18 @@ struct CustomCalendarView: View {
             return Int(23.2488 + 0.242194 * (y - 1980) - floor((y - 1980)/4))
         }
 
-        // 固定
         add(1,1); add(2,11); add(2,23)
         add(4,29); add(5,3); add(5,4); add(5,5)
         add(8,11); add(11,3); add(11,23)
 
-        // ハッピーマンデー
         nthWeekday(2,2,month:1)
         nthWeekday(3,2,month:7)
         nthWeekday(3,2,month:9)
         nthWeekday(2,2,month:10)
 
-        // 春分・秋分
         add(3, vernalEquinoxDay())
         add(9, autumnalEquinoxDay())
 
-        // 振替休日
         var withSub = holidays
         for d in holidays {
             let w = calendar.component(.weekday, from: d)
@@ -376,7 +376,8 @@ struct CustomCalendarView: View {
     }
 }
 
-// 罫線を揃える Modifier
+// 罫線を揃える Modifier（前と同じ）
+
 private struct CellBorderModifier: ViewModifier {
     let row: Int
     let column: Int
@@ -411,6 +412,7 @@ private extension View {
 }
 
 // MARK: - 日別アラーム一覧シート
+// ここでは disabledDates を見てトグル状態だけ変える
 
 struct DayAlarmsSheetView: View {
     let date: Date
@@ -435,9 +437,9 @@ struct DayAlarmsSheetView: View {
 
     private var alarmsForDate: [AlarmItem] {
         let weekday = calendar.component(.weekday, from: date)
-        let dayStart = calendar.startOfDay(for: date)
+        // ⭐ disabledDates はここでは絞り込まない
         return alarmViewModel.alarms.filter {
-            $0.repeatWeekdays.contains(weekday) && $0.isEnabled && !$0.disabledDates.contains(dayStart)
+            $0.repeatWeekdays.contains(weekday) && $0.isEnabled
         }
     }
 
@@ -450,10 +452,11 @@ struct DayAlarmsSheetView: View {
                 } else {
                     let dayStart = calendar.startOfDay(for: date)
                     ForEach(alarmsForDate) { alarm in
+                        let isOnInitial = !alarm.disabledDates.contains(dayStart)
                         DayAlarmRow(
                             alarm: alarm,
                             dayStart: dayStart,
-                            isOnInitial: true,
+                            isOnInitial: isOnInitial,
                             onToggle: { isOn in
                                 alarmViewModel.updateDisabledDate(
                                     for: alarm.id,
