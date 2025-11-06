@@ -1,97 +1,205 @@
+// AlarmModel.swift
+// アラームのモデルと ViewModel
+
 import Foundation
+import SwiftUI
+import Combine
 
-/// 繰り返しの種類
-enum RepeatStyle: String, Codable, CaseIterable, Identifiable {
-    case none       // 繰り返しなし（単発）
-    case weekdays   // 平日だけ
-    case everyday   // 毎日
-    case custom     // 好きな曜日だけ
+// MARK: - 1つのアラーム
 
-    var id: String { rawValue }
-
-    /// 画面に出すとき用の表示名
-    var displayName: String {
-        switch self {
-        case .none: return "繰り返しなし"
-        case .weekdays: return "平日"
-        case .everyday: return "毎日"
-        case .custom: return "カスタム"
-        }
-    }
-}
-
-/// アラーム1件分のデータ
-struct Alarm: Identifiable, Codable, Hashable {
-    /// 一意に識別するためのID（List表示などで使う）
+struct AlarmItem: Identifiable, Codable, Equatable {
     let id: UUID
-
-    /// アラームの時間
-    /// - 繰り返しアラームのときは「時刻」だけを使うイメージ
-    /// - 単発アラームのときは「日付＋時刻」
-    var time: Date
-
-    /// 繰り返しの種類（なし / 平日 / 毎日 / カスタム）
-    var repeatStyle: RepeatStyle
-
-    /// カスタム繰り返しで使う曜日
-    /// Calendarのweekdayと同じで 1=日曜, 2=月曜, ... , 7=土曜
-    var customWeekdays: Set<Int>
-
-    /// 日本の祝日は鳴らさないか
-    var skipJapanHolidays: Bool
-
-    /// ユーザーが設定した独自休日（年末年始・お盆など）は鳴らさないか
-    var skipUserHolidays: Bool
-
-    /// 「この日だけオフ」にした日付のリスト
-    /// 年月日が同じなら同じ日とみなします
-    var exceptionDates: [Date]
-
-    /// アラーム全体のON / OFF
+    var hour: Int
+    var minute: Int
     var isEnabled: Bool
-
-    // MARK: - 便利プロパティ
-
-    /// 単発アラームかどうか（＝繰り返しなし）
-    var isOneTime: Bool {
-        repeatStyle == .none
-    }
-
-    /// このアラームが有効になる曜日一覧（繰り返しアラーム用）
-    /// - 1=日曜, 2=月曜, ... , 7=土曜
-    var activeWeekdays: Set<Int> {
-        switch repeatStyle {
-        case .none:
-            return [] // 単発は曜日で管理しない
-        case .everyday:
-            return Set(1...7)
-        case .weekdays:
-            return Set(2...6) // 月〜金
-        case .custom:
-            return customWeekdays
-        }
-    }
-
-    // MARK: - イニシャライザ
+    /// 1 = 日, 2 = 月, ... 7 = 土
+    var repeatWeekdays: Set<Int>
+    var excludeJapaneseHolidays: Bool
+    var soundName: String
+    var snoozeEnabled: Bool
+    /// 「この日だけ鳴らさない」日付（0時で揃えた Date）
+    var disabledDates: Set<Date>
 
     init(
         id: UUID = UUID(),
-        time: Date,
-        repeatStyle: RepeatStyle = .none,
-        customWeekdays: Set<Int> = [],
-        skipJapanHolidays: Bool = false,
-        skipUserHolidays: Bool = false,
-        exceptionDates: [Date] = [],
-        isEnabled: Bool = true
+        hour: Int,
+        minute: Int,
+        isEnabled: Bool = true,
+        repeatWeekdays: Set<Int> = [2, 3, 4, 5, 6], // デフォルト平日
+        excludeJapaneseHolidays: Bool = true,
+        soundName: String = "標準",
+        snoozeEnabled: Bool = true,
+        disabledDates: Set<Date> = []
     ) {
         self.id = id
-        self.time = time
-        self.repeatStyle = repeatStyle
-        self.customWeekdays = customWeekdays
-        self.skipJapanHolidays = skipJapanHolidays
-        self.skipUserHolidays = skipUserHolidays
-        self.exceptionDates = exceptionDates
+        self.hour = hour
+        self.minute = minute
         self.isEnabled = isEnabled
+        self.repeatWeekdays = repeatWeekdays
+        self.excludeJapaneseHolidays = excludeJapaneseHolidays
+        self.soundName = soundName
+        self.snoozeEnabled = snoozeEnabled
+        self.disabledDates = disabledDates
     }
 }
 
+// MARK: - 表示用ヘルパー
+
+extension AlarmItem {
+
+    /// 例: "7:30"
+    var timeString: String {
+        var comps = DateComponents()
+        comps.hour = hour
+        comps.minute = minute
+        let calendar = Calendar.current
+        let date = calendar.date(from: comps) ?? Date()
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.dateFormat = "H:mm"
+        return formatter.string(from: date)
+    }
+
+    /// DatePicker 用
+    var timeAsDate: Date {
+        var comps = DateComponents()
+        comps.hour = hour
+        comps.minute = minute
+        return Calendar.current.date(from: comps) ?? Date()
+    }
+
+    /// DatePicker で選んだ時間を反映
+    mutating func updateTime(from date: Date) {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
+        self.hour = comps.hour ?? 0
+        self.minute = comps.minute ?? 0
+    }
+
+    /// 繰り返しの説明（例: "平日", "月火水", "なし"）
+    var repeatDescription: String {
+        if repeatWeekdays.isEmpty {
+            return "なし"
+        }
+
+        let allDays = Set(1...7)
+        if repeatWeekdays == allDays {
+            return "毎日"
+        }
+        let weekdays: Set<Int> = [2, 3, 4, 5, 6]
+        if repeatWeekdays == weekdays {
+            return "平日"
+        }
+        let weekend: Set<Int> = [1, 7]
+        if repeatWeekdays == weekend {
+            return "週末"
+        }
+
+        let map: [Int: String] = [
+            1: "日", 2: "月", 3: "火",
+            4: "水", 5: "木", 6: "金", 7: "土"
+        ]
+        let sorted = repeatWeekdays.sorted()
+        let symbols = sorted.compactMap { map[$0] }
+        return symbols.joined()
+    }
+
+    /// 行の下の小さな説明文
+    var detailText: String {
+        var parts: [String] = []
+
+        if !repeatWeekdays.isEmpty {
+            parts.append(repeatDescription)
+        }
+        if excludeJapaneseHolidays {
+            parts.append("祝日オフ")
+        }
+        parts.append(soundName)
+
+        if parts.isEmpty {
+            return "なし"
+        } else {
+            return parts.joined(separator: "・")
+        }
+    }
+
+    /// 並び替え用（0〜1439）
+    var totalMinutes: Int {
+        hour * 60 + minute
+    }
+}
+
+// MARK: - ViewModel 本体
+
+class AlarmViewModel: ObservableObject {
+
+    @Published var alarms: [AlarmItem] = []
+
+    /// サウンド候補（とりあえず固定の文字列だけ）
+    let availableSounds: [String] = [
+        "標準", "ビープ", "ベル", "鳥のさえずり"
+    ]
+
+    init() {
+        loadInitialData()
+    }
+
+    private func loadInitialData() {
+        alarms = []
+        // 必要ならここにデバッグ用ダミーを入れてもOK
+    }
+
+    /// 新規作成用のデフォルトアラーム
+    func createNewAlarmTemplate() -> AlarmItem {
+        AlarmItem(
+            hour: 7,
+            minute: 0,
+            isEnabled: true,
+            repeatWeekdays: [2, 3, 4, 5, 6], // 平日
+            excludeJapaneseHolidays: true,
+            soundName: "標準",
+            snoozeEnabled: true,
+            disabledDates: []
+        )
+    }
+
+    // MARK: CRUD
+
+    func add(alarm: AlarmItem) {
+        alarms.append(alarm)
+        sort()
+    }
+
+    func update(alarm: AlarmItem) {
+        guard let index = alarms.firstIndex(where: { $0.id == alarm.id }) else { return }
+        alarms[index] = alarm
+        sort()
+    }
+
+    func delete(at offsets: IndexSet) {
+        alarms.remove(atOffsets: offsets)
+    }
+
+    func toggleEnabled(id: AlarmItem.ID, isOn: Bool) {
+        guard let index = alarms.firstIndex(where: { $0.id == id }) else { return }
+        alarms[index].isEnabled = isOn
+    }
+
+    /// 「この日だけ鳴らさない/鳴らす」を更新
+    func updateDisabledDate(for id: UUID, date: Date, enabled: Bool) {
+        let day = Calendar.current.startOfDay(for: date)
+        guard let index = alarms.firstIndex(where: { $0.id == id }) else { return }
+
+        if enabled {
+            // その日だけ ON にする → disabled から削除
+            alarms[index].disabledDates.remove(day)
+        } else {
+            // その日だけ OFF にする → disabled に追加
+            alarms[index].disabledDates.insert(day)
+        }
+    }
+
+    private func sort() {
+        alarms.sort { $0.totalMinutes < $1.totalMinutes }
+    }
+}

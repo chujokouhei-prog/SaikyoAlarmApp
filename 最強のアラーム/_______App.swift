@@ -1,12 +1,15 @@
+// ______App.swift
+
 import SwiftUI
 
 @main
 struct SaikyoAlarmApp: App {
+    @StateObject private var alarmViewModel = AlarmViewModel()
+
     var body: some Scene {
         WindowGroup {
-            // 最初に表示する画面
             ContentView()
+                .environmentObject(alarmViewModel)
         }
     }
 }
-
