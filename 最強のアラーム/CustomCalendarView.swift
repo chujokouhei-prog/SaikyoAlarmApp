@@ -1,5 +1,5 @@
 // CustomCalendarView.swift
-// アラーム表示つきカレンダー（スワイプ・今日ボタン・祝日色・1日だけOFF）
+// カード風デザインのアラーム付きカレンダー
 
 import SwiftUI
 
@@ -27,48 +27,53 @@ struct CustomCalendarView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack(alignment: .bottomLeading) {
-                VStack(spacing: 12) {
+            ZStack {
+                // 背景をうっすらグレーにして、カレンダー全体を浮かせる
+                Color(.systemGray6)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 16) {
                     headerView
                     weekdayHeader
                     calendarGrid
-
-                    Text("選択中: \(dateString(selectedDate))")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.top, 8)
-
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, 12)
                 .padding(.top, 12)
                 .padding(.bottom, 40)
                 .gesture(
                     DragGesture()
                         .onEnded { value in
                             if value.translation.width < -50 {
-                                withAnimation(.easeInOut(duration: 0.25)) {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                                     monthOffset += 1
                                 }
                             } else if value.translation.width > 50 {
-                                withAnimation(.easeInOut(duration: 0.25)) {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                                     monthOffset -= 1
                                 }
                             }
                         }
                 )
 
-                Button(action: moveToToday) {
-                    Text("今日")
-                        .font(.subheadline)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(.thinMaterial)
-                        .clipShape(Capsule())
+                // 今日ボタン
+                VStack {
+                    Spacer()
+                    HStack {
+                        Button(action: moveToToday) {
+                            Text("今日")
+                                .font(.subheadline.weight(.medium))
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 8)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Capsule())
+                        }
+                        .padding(.leading, 24)
+                        .padding(.bottom, 16)
+
+                        Spacer()
+                    }
                 }
-                .padding(.horizontal)
-                .padding(.bottom, 12)
             }
             .navigationTitle("カレンダー")
         }
@@ -86,97 +91,76 @@ struct CustomCalendarView: View {
         }
     }
 
-    // MARK: - ヘッダー
+    // MARK: - ヘッダー（タイトル＋前後月ボタン）
 
     private var headerView: some View {
         HStack {
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     monthOffset -= 1
                 }
             } label: {
                 Image(systemName: "chevron.left")
+                    .font(.system(size: 18, weight: .semibold))
             }
 
             Spacer()
 
             Text(monthTitle(displayMonth))
-                .font(.headline)
+                .font(.system(size: 20, weight: .semibold))
 
             Spacer()
 
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     monthOffset += 1
                 }
             } label: {
                 Image(systemName: "chevron.right")
+                    .font(.system(size: 18, weight: .semibold))
             }
         }
     }
 
+    // MARK: - 曜日ヘッダー
+
     private var weekdayHeader: some View {
         let symbols = ["日", "月", "火", "水", "木", "金", "土"]
-        return HStack(spacing: 0) {
+
+        return HStack(spacing: 8) {
             ForEach(0..<symbols.count, id: \.self) { idx in
                 Text(symbols[idx])
-                    .font(.subheadline)
+                    .font(.caption2.weight(.medium))
                     .foregroundColor(idx == 0 ? .red : (idx == 6 ? .blue : .secondary))
                     .frame(maxWidth: .infinity)
             }
         }
+        .padding(.horizontal, 4)
     }
 
     // MARK: - カレンダー本体
 
     private var calendarGrid: some View {
         let dates = calendarDates(for: displayMonth)
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 0), count: 7)
-        let rowCount = dates.count / 7
-        let lastRow = rowCount - 1
-        let lastColumn = 6
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 7)
 
-        return LazyVGrid(columns: columns, spacing: 0) {
+        return LazyVGrid(columns: columns, spacing: 8) {
             ForEach(dates.indices, id: \.self) { index in
-                let row = index / 7
-                let column = index % 7
                 if let date = dates[index] {
-                    dayCell(for: date,
-                            row: row,
-                            column: column,
-                            lastRow: lastRow,
-                            lastColumn: lastColumn)
+                    dayCell(for: date)
                 } else {
-                    emptyCell(row: row,
-                              column: column,
-                              lastRow: lastRow,
-                              lastColumn: lastColumn)
+                    Color.clear
+                        .frame(height: 64)
                 }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func emptyCell(row: Int, column: Int, lastRow: Int, lastColumn: Int) -> some View {
-        Rectangle()
-            .foregroundColor(.clear)
-            .frame(height: 64)
-            .cellBorder(row: row,
-                        column: column,
-                        lastRow: lastRow,
-                        lastColumn: lastColumn)
-    }
+    // MARK: - 日セル（カード＋バッジ）
 
-    // MARK: - 日セル
-
-    private func dayCell(for date: Date,
-                         row: Int,
-                         column: Int,
-                         lastRow: Int,
-                         lastColumn: Int) -> some View {
+    private func dayCell(for date: Date) -> some View {
         let day = calendar.component(.day, from: date)
         let isToday = calendar.isDateInToday(date)
-        let isSelected = calendar.isDate(date, inSameDayAs: selectedDate)
         let isThisMonth = calendar.isDate(date, equalTo: displayMonth, toGranularity: .month)
         let weekday = calendar.component(.weekday, from: date)
         let isHoliday = isJapaneseHoliday(date)
@@ -186,59 +170,84 @@ struct CustomCalendarView: View {
         let isPast = dayStart < todayStart
 
         let baseColor: Color = {
-            if !isThisMonth { return .secondary }
+            if !isThisMonth { return .secondary.opacity(0.6) }
             if isHoliday { return .red }
             if weekday == 1 { return .red }
             if weekday == 7 { return .blue }
             return .primary
         }()
 
-        // ⭐ 過去の日は表示しない、それ以外は「その日に関係あるアラーム」を全部表示
-        let dayAlarms: [AlarmItem] = isPast ? [] : alarmsFor(date: date)
         let textColor: Color = isToday ? .white : baseColor
+        let dayAlarms: [AlarmItem] = isPast ? [] : alarmsFor(date: date)
 
         return Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
                 selectedDate = date
             }
             if !dayAlarms.isEmpty {
                 showingDayAlarmsSheet = true
             }
         } label: {
-            VStack(spacing: 4) {
+            VStack(alignment: .center, spacing: 6) {
+                // 日付
                 ZStack {
                     if isToday {
-                        Circle().fill(Color.red)
+                        Circle()
+                            .fill(Color.red)
+                            .shadow(color: .red.opacity(0.35), radius: 6, x: 0, y: 3)
                     }
-                    if isSelected {
-                        Circle().stroke(Color.accentColor, lineWidth: 2)
-                    }
-
                     Text("\(day)")
-                        .font(.system(size: 16, weight: isSelected ? .semibold : .regular))
+                        .font(.system(size: 16, weight: isToday ? .semibold : .regular))
                         .foregroundColor(textColor)
                 }
-                .frame(height: 32)
+                .frame(height: 24)
 
-                VStack(spacing: 2) {
+                // アラームがある場合はピル型バッジで表示
+                VStack(spacing: 4) {
                     ForEach(dayAlarms.prefix(2), id: \.id) { alarm in
-                        Text(alarm.timeString)
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(alarm.isEnabled ? .accentColor : .gray)
+                        HStack(spacing: 4) {
+                            Text(alarm.timeString)
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(
+                                    Capsule()
+                                        .fill(
+                                            alarm.isEnabled
+                                            ? Color.accentColor.opacity(0.12)
+                                            : Color.gray.opacity(0.16)
+                                        )
+                                )
+                                .foregroundColor(
+                                    alarm.isEnabled
+                                    ? Color.accentColor
+                                    : Color.gray
+                                )
+
+                            Spacer(minLength: 0)
+                        }
                     }
+
                     if dayAlarms.count > 2 {
-                        Text("他\(dayAlarms.count - 2)件")
-                            .font(.system(size: 9))
-                            .foregroundColor(.secondary)
+                        HStack {
+                            Text("他\(dayAlarms.count - 2)件")
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary)
+                            Spacer(minLength: 0)
+                        }
                     }
                 }
-                .padding(.bottom, 4)
             }
             .frame(height: 64)
-            .cellBorder(row: row,
-                        column: column,
-                        lastRow: lastRow,
-                        lastColumn: lastColumn)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white)
+                    .shadow(color: Color.black.opacity(0.04), radius: 2, x: 0, y: 1)
+            )
+            .opacity(isPast ? 0.4 : 1.0)
         }
         .buttonStyle(.plain)
     }
@@ -250,22 +259,21 @@ struct CustomCalendarView: View {
         let dayStart = calendar.startOfDay(for: date)
         let todayStart = calendar.startOfDay(for: Date())
 
-        // 今日より過去は表示しない
+        // 昨日以前は表示しない
         guard dayStart >= todayStart else { return [] }
 
-        // ✅ isEnabled かつ、その曜日に鳴る ＋
-        // ✅ その日付が disabledDates に含まれていないものだけ表示
+        // isEnabled かつ、その曜日に鳴る、かつその日が disabledDates に入っていないもの
         return alarmViewModel.alarms.filter { alarm in
             alarm.isEnabled &&
             alarm.repeatWeekdays.contains(weekday) &&
             !alarm.disabledDates.contains(dayStart)
         }
     }
-    
+
     // MARK: - 日付ヘルパーなど
 
     private func moveToToday() {
-        withAnimation(.easeInOut(duration: 0.25)) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
             monthOffset = 0
             selectedDate = Date()
         }
@@ -280,13 +288,6 @@ struct CustomCalendarView: View {
         let f = DateFormatter()
         f.locale = Locale(identifier: "ja_JP")
         f.dateFormat = "yyyy年M月"
-        return f.string(from: date)
-    }
-
-    private func dateString(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "ja_JP")
-        f.dateFormat = "yyyy/MM/dd(E)"
         return f.string(from: date)
     }
 
@@ -305,13 +306,16 @@ struct CustomCalendarView: View {
                 result.append(d)
             }
         }
+
         while result.count % 7 != 0 {
             result.append(nil)
         }
+
         return result
     }
 
-    // 日本の祝日（簡易版＋振替）※前と同じ
+    // MARK: - 日本の祝日（簡易版＋振替）
+
     private func isJapaneseHoliday(_ date: Date) -> Bool {
         let dayStart = calendar.startOfDay(for: date)
         let year = calendar.component(.year, from: dayStart)
@@ -341,78 +345,54 @@ struct CustomCalendarView: View {
 
         func vernalEquinoxDay() -> Int {
             let y = Double(year)
-            return Int(20.8431 + 0.242194 * (y - 1980) - floor((y - 1980)/4))
+            return Int(20.8431 + 0.242194 * (y - 1980) - floor((y - 1980) / 4.0))
         }
+
         func autumnalEquinoxDay() -> Int {
             let y = Double(year)
-            return Int(23.2488 + 0.242194 * (y - 1980) - floor((y - 1980)/4))
+            return Int(23.2488 + 0.242194 * (y - 1980) - floor((y - 1980) / 4.0))
         }
 
-        add(1,1); add(2,11); add(2,23)
-        add(4,29); add(5,3); add(5,4); add(5,5)
-        add(8,11); add(11,3); add(11,23)
+        // 固定祝日
+        add(1, 1)
+        add(2, 11)
+        add(2, 23)
+        add(4, 29)
+        add(5, 3)
+        add(5, 4)
+        add(5, 5)
+        add(8, 11)
+        add(11, 3)
+        add(11, 23)
 
-        nthWeekday(2,2,month:1)
-        nthWeekday(3,2,month:7)
-        nthWeekday(3,2,month:9)
-        nthWeekday(2,2,month:10)
+        // ハッピーマンデー
+        nthWeekday(2, 2, month: 1)  // 成人の日
+        nthWeekday(3, 2, month: 7)  // 海の日
+        nthWeekday(3, 2, month: 9)  // 敬老の日
+        nthWeekday(2, 2, month: 10) // スポーツの日
 
+        // 春分・秋分
         add(3, vernalEquinoxDay())
         add(9, autumnalEquinoxDay())
 
-        var withSub = holidays
+        // 振替休日
+        var withSubstitute = holidays
         for d in holidays {
-            let w = calendar.component(.weekday, from: d)
-            if w == 1 {
+            let weekday = calendar.component(.weekday, from: d)
+            if weekday == 1 { // 日曜
                 var next = calendar.date(byAdding: .day, value: 1, to: d)!
                 while holidays.contains(next) {
                     next = calendar.date(byAdding: .day, value: 1, to: next)!
                 }
-                withSub.insert(calendar.startOfDay(for: next))
+                withSubstitute.insert(calendar.startOfDay(for: next))
             }
         }
 
-        return withSub.contains(dayStart)
+        return withSubstitute.contains(dayStart)
     }
 }
 
-// 罫線を揃える Modifier（前と同じ）
-
-private struct CellBorderModifier: ViewModifier {
-    let row: Int
-    let column: Int
-    let lastRow: Int
-    let lastColumn: Int
-    let color = Color.gray.opacity(0.15)
-    let width: CGFloat = 0.5
-
-    func body(content: Content) -> some View {
-        content
-            .overlay(alignment: .bottom) {
-                if row < lastRow {
-                    Rectangle()
-                        .frame(height: width)
-                        .foregroundColor(color)
-                }
-            }
-            .overlay(alignment: .trailing) {
-                if column < lastColumn {
-                    Rectangle()
-                        .frame(width: width)
-                        .foregroundColor(color)
-                }
-            }
-    }
-}
-
-private extension View {
-    func cellBorder(row: Int, column: Int, lastRow: Int, lastColumn: Int) -> some View {
-        modifier(CellBorderModifier(row: row, column: column, lastRow: lastRow, lastColumn: lastColumn))
-    }
-}
-
-// MARK: - 日別アラーム一覧シート
-// ここでは disabledDates を見てトグル状態だけ変える
+// MARK: - 日別アラーム一覧シート（前と同じ仕様：その日だけON/OFF）
 
 struct DayAlarmsSheetView: View {
     let date: Date
@@ -437,7 +417,6 @@ struct DayAlarmsSheetView: View {
 
     private var alarmsForDate: [AlarmItem] {
         let weekday = calendar.component(.weekday, from: date)
-        // ⭐ disabledDates はここでは絞り込まない
         return alarmViewModel.alarms.filter {
             $0.repeatWeekdays.contains(weekday) && $0.isEnabled
         }
@@ -483,8 +462,6 @@ struct DayAlarmsSheetView: View {
     }
 }
 
-// 1行分：トグルでその日だけON/OFF、タップで編集
-
 private struct DayAlarmRow: View {
     let alarm: AlarmItem
     let dayStart: Date
@@ -509,7 +486,7 @@ private struct DayAlarmRow: View {
 
     var body: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(alarm.timeString)
                     .font(.title2)
                 Text(alarm.detailText)
