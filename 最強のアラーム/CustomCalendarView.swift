@@ -1,5 +1,5 @@
 // CustomCalendarView.swift
-// カード風デザインのアラーム付きカレンダー（祝日・1日だけOFF対応）
+// カード風デザインのアラーム付きカレンダー（祝日・1日だけOFF・単発アラーム対応）
 
 import SwiftUI
 
@@ -11,6 +11,7 @@ struct CustomCalendarView: View {
 
     @State private var showingDayAlarmsSheet = false
     @State private var editingAlarm: AlarmItem?
+    @State private var creatingAlarm: AlarmItem?      // 新規作成用
 
     private var calendar: Calendar {
         var cal = Calendar(identifier: .gregorian)
@@ -20,28 +21,23 @@ struct CustomCalendarView: View {
     }
 
     private var displayMonth: Date {
-        calendar.date(byAdding: .month,
-                      value: monthOffset,
-                      to: firstOfMonth(for: Date())) ?? Date()
+        calendar.date(
+            byAdding: .month,
+            value: monthOffset,
+            to: firstOfMonth(for: Date())
+        ) ?? Date()
     }
 
     var body: some View {
         NavigationStack {
             ZStack {
-                // 背景をオフホワイト寄りにしてカードを浮かせる
                 Color(.systemGray5)
                     .ignoresSafeArea()
 
                 VStack(spacing: 16) {
-                    // ✅ 自前の大きなタイトル
                     titleView
-
-                    // 曜日ヘッダーの上に年月ヘッダー
                     headerView
-
-                    // 曜日ヘッダー
                     weekdayHeader
-
                     calendarGrid
                     Spacer(minLength: 0)
                 }
@@ -83,18 +79,28 @@ struct CustomCalendarView: View {
                     }
                 }
             }
-            // 🔻 navigationTitle は削除（被り防止）
         }
+        // 日別アラーム一覧シート
         .sheet(isPresented: $showingDayAlarmsSheet) {
             DayAlarmsSheetView(
-                date: selectedDate
-            ) { alarm in
-                editingAlarm = alarm
-            }
+                date: selectedDate,
+                onSelectAlarm: { alarm in
+                    editingAlarm = alarm
+                },
+                onCreateNew: { newAlarm in
+                    creatingAlarm = newAlarm
+                }
+            )
             .environmentObject(alarmViewModel)
         }
+        // 既存アラーム編集
         .sheet(item: $editingAlarm) { alarm in
             AlarmEditView(alarm: alarm, isNew: false)
+                .environmentObject(alarmViewModel)
+        }
+        // 新規アラーム作成（カレンダーから）
+        .sheet(item: $creatingAlarm) { alarm in
+            AlarmEditView(alarm: alarm, isNew: true)
                 .environmentObject(alarmViewModel)
         }
     }
@@ -207,9 +213,8 @@ struct CustomCalendarView: View {
             withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
                 selectedDate = date
             }
-            if !dayAlarms.isEmpty {
-                showingDayAlarmsSheet = true
-            }
+            // アラームがなくても必ずシートを出す
+            showingDayAlarmsSheet = true
         } label: {
             VStack(alignment: .center, spacing: 6) {
                 // 日付
@@ -286,6 +291,7 @@ struct CustomCalendarView: View {
     }
 
     // MARK: - その日に鳴るアラーム（カレンダー表示用）
+    // 🔵 単発アラーム（specificDates）＋ 繰り返しアラーム（repeatWeekdays）の両方を考慮
 
     private func alarmsFor(date: Date) -> [AlarmItem] {
         let weekday = calendar.component(.weekday, from: date)
@@ -295,11 +301,18 @@ struct CustomCalendarView: View {
         // 昨日以前は表示しない
         guard dayStart >= todayStart else { return [] }
 
-        // isEnabled かつ、その曜日に鳴る、かつその日に disabledDates が設定されていないもの
         return alarmViewModel.alarms.filter { alarm in
-            alarm.isEnabled &&
-            alarm.repeatWeekdays.contains(weekday) &&
-            !alarm.disabledDates.contains(dayStart)
+            guard alarm.isEnabled else { return false }
+
+            // 単発アラーム：specificDates にこの日が含まれている
+            let isOneTime = alarm.specificDates.contains(dayStart)
+
+            // 繰り返しアラーム：曜日が合っていて、この日が「OFF指定」でない
+            let isRepeating =
+                alarm.repeatWeekdays.contains(weekday) &&
+                !alarm.disabledDates.contains(dayStart)
+
+            return isOneTime || isRepeating
         }
     }
 
@@ -348,6 +361,7 @@ struct CustomCalendarView: View {
     }
 
     // MARK: - 日本の祝日（簡易版＋振替）
+    // ※ここは以前のまま
 
     private func isJapaneseHoliday(_ date: Date) -> Bool {
         let dayStart = calendar.startOfDay(for: date)
@@ -425,11 +439,12 @@ struct CustomCalendarView: View {
     }
 }
 
-// MARK: - 日別アラーム一覧シート（その日だけON/OFF）
+// MARK: - 日別アラーム一覧シート（その日だけON/OFF＋新規作成）
 
 struct DayAlarmsSheetView: View {
     let date: Date
     let onSelectAlarm: (AlarmItem) -> Void
+    let onCreateNew: (AlarmItem) -> Void
 
     @EnvironmentObject var alarmViewModel: AlarmViewModel
     @Environment(\.dismiss) private var dismiss
@@ -448,11 +463,18 @@ struct DayAlarmsSheetView: View {
         return f.string(from: date)
     }
 
+    /// この日に関係するアラーム（単発 + 繰り返し）を一覧表示
     private var alarmsForDate: [AlarmItem] {
         let weekday = calendar.component(.weekday, from: date)
-        // その曜日に鳴りうる、かつ全体が有効なアラームを一覧
-        return alarmViewModel.alarms.filter {
-            $0.repeatWeekdays.contains(weekday) && $0.isEnabled
+        let dayStart = calendar.startOfDay(for: date)
+
+        return alarmViewModel.alarms.filter { alarm in
+            guard alarm.isEnabled else { return false }
+
+            let isOneTime = alarm.specificDates.contains(dayStart)
+            let isRepeating = alarm.repeatWeekdays.contains(weekday)
+
+            return isOneTime || isRepeating
         }
     }
 
@@ -490,6 +512,25 @@ struct DayAlarmsSheetView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("閉じる") { dismiss() }
+                }
+                // この日の新規アラームを追加（「単発」として作る）
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        let dayStart = calendar.startOfDay(for: date)
+
+                        let newAlarm = AlarmItem(
+                            hour: 7,
+                            minute: 0,
+                            repeatWeekdays: [],          // 繰り返しなし
+                            specificDates: [dayStart]    // この日だけ鳴る
+                        )
+
+                        dismiss()
+                        onCreateNew(newAlarm)
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("アラームを追加")
                 }
             }
         }

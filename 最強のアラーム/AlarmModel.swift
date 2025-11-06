@@ -1,5 +1,5 @@
 // AlarmModel.swift
-// アラームのモデルと ViewModel
+// アラームのモデルと ViewModel（単発アラーム対応）
 
 import Foundation
 import SwiftUI
@@ -17,8 +17,13 @@ struct AlarmItem: Identifiable, Codable, Equatable {
     var excludeJapaneseHolidays: Bool
     var soundName: String
     var snoozeEnabled: Bool
+
     /// 「この日だけ鳴らさない」日付（0時で揃えた Date）
     var disabledDates: Set<Date>
+
+    /// 🔵「この日だけ鳴る」単発アラーム用の日付（0時で揃えた Date）
+    /// 例: [2025-11-20] のように、その日だけ鳴らしたいときに使う
+    var specificDates: Set<Date>
 
     init(
         id: UUID = UUID(),
@@ -29,7 +34,8 @@ struct AlarmItem: Identifiable, Codable, Equatable {
         excludeJapaneseHolidays: Bool = true,
         soundName: String = "標準",
         snoozeEnabled: Bool = true,
-        disabledDates: Set<Date> = []
+        disabledDates: Set<Date> = [],
+        specificDates: Set<Date> = [] // ← 新規追加
     ) {
         self.id = id
         self.hour = hour
@@ -40,6 +46,7 @@ struct AlarmItem: Identifiable, Codable, Equatable {
         self.soundName = soundName
         self.snoozeEnabled = snoozeEnabled
         self.disabledDates = disabledDates
+        self.specificDates = specificDates
     }
 }
 
@@ -78,6 +85,9 @@ extension AlarmItem {
 
     /// 繰り返しの説明（例: "平日", "月火水", "なし"）
     var repeatDescription: String {
+        if !specificDates.isEmpty {
+            return "単発"
+        }
         if repeatWeekdays.isEmpty {
             return "なし"
         }
@@ -108,7 +118,7 @@ extension AlarmItem {
     var detailText: String {
         var parts: [String] = []
 
-        if !repeatWeekdays.isEmpty {
+        if !repeatWeekdays.isEmpty || !specificDates.isEmpty {
             parts.append(repeatDescription)
         }
         if excludeJapaneseHolidays {
@@ -159,7 +169,8 @@ class AlarmViewModel: ObservableObject {
             excludeJapaneseHolidays: true,
             soundName: "標準",
             snoozeEnabled: true,
-            disabledDates: []
+            disabledDates: [],
+            specificDates: [] // ← 単発なし（デフォルト）
         )
     }
 
